@@ -405,6 +405,29 @@ def test_the_orchestrator_connects_without_a_backend(monkeypatch):
     }
 
 
+def test_a_tenant_stack_points_the_orchestrator_at_its_acquirium(monkeypatch):
+    # D16: the stack sets FLEXORCH_ACQUIRIUM_URL; Orchestrator() then uses mode 3.
+    seen = []
+
+    class Fake:
+        def backend(self):
+            return MemoryBackend()
+
+        def close(self):
+            pass
+
+    def fake_connect(**kwargs):
+        seen.append(kwargs["acquirium_url"])
+        return Fake()
+
+    monkeypatch.setattr("flex_orchestrator.orchestrator.connect", fake_connect)
+    stack = {"FLEXORCH_ACQUIRIUM_URL": "http://acquirium:8000"}
+    Orchestrator(environ=stack)
+    Orchestrator(environ={})
+    Orchestrator(data_dir="here", environ=stack)  # an explicit store wins
+    assert seen == ["http://acquirium:8000", None, None]
+
+
 def test_a_backend_and_connection_arguments_conflict():
     with pytest.raises(ValueError, match="either a backend or connection"):
         Orchestrator(MemoryBackend(), db=DB)

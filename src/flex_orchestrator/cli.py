@@ -9,6 +9,7 @@
     flex-orch [CONNECTION] export STUDY PATH [--parts ...] [--tags ...]
                                           [--compress] [--overwrite]
     flex-orch [CONNECTION] import PATH [--name N] [--on-existing error|skip]
+    flex-orch [CONNECTION] verify [--study S ...] [--samples N] [--against FILE]
 
 ``CONNECTION`` picks the store as ``Orchestrator()`` does (D11):
 ``--data-dir`` (local, the default ``.flexorch``), ``--db`` with
@@ -21,7 +22,8 @@ installed plugin on top of those in ``FLEXORCH_PLUGINS``.
 ``cmd`` builds its options from the command's params model: ``--field-name``
 per field, numbers and strings as typed, lists as several values, booleans as
 ``--flag`` / ``--no-flag``, and anything else as JSON. Every subcommand prints
-its result as JSON.
+its result as JSON. ``verify`` exits 1 when the store has a problem or, with
+``--against``, differs from that earlier report.
 """
 
 import argparse
@@ -51,7 +53,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"flex-orch: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(to_json(result), indent=2))
-    return 0
+    return 0 if args.action != "verify" or result["ok"] else 1
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -109,6 +111,17 @@ def _parser() -> argparse.ArgumentParser:
     imported.add_argument("path")
     imported.add_argument("--name", help="the new study's name")
     imported.add_argument("--on-existing", choices=["error", "skip"], default="error")
+
+    check = actions.add_parser(
+        "verify", help="check the store and fingerprint it (after a restore, say)"
+    )
+    check.add_argument("--study", nargs="+", help="only these studies")
+    check.add_argument(
+        "--samples", type=int, default=5, help="items per kind to read in full"
+    )
+    check.add_argument(
+        "--against", metavar="FILE", help="an earlier report to compare with"
+    )
     return parser
 
 
@@ -173,6 +186,15 @@ def _run(orch: Any, args: argparse.Namespace, rest: list[str]) -> Any:
             "counts": report.counts,
             "skipped": report.skipped,
         }
+    if args.action == "verify":
+        from flex_orchestrator.verify import compare, verify
+
+        report = verify(orch, args.study, args.samples)
+        if args.against is not None:
+            with open(args.against, encoding="utf-8") as file:
+                report["differences"] = compare(json.load(file), report)
+        report["ok"] = not report["problems"] and not report.get("differences")
+        return report
     cmd = orch.commands.get(args.name)
     if args.study is not None:
         orch.select_study(args.study)

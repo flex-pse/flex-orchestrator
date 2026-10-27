@@ -1,0 +1,90 @@
+# One tenant's stack (PLAN.md D14, M6). provision_tenant.sh starts it:
+#
+#   TENANT=tenant_a docker compose -f compose.tenant.yaml -p flexorch-tenant_a up -d
+#
+# - acquirium: the tenant's Acquirium server, on Postgres (the tenant's own
+#   database and role) with its graph and files on the tenant's volume. It
+#   alone holds the database password: a pgpass file libpq reads, so the
+#   password is in no environment variable, command line or DSN.
+# - orchestrator: scripts and `flex-orch`, run on demand (Phase 1):
+#
+#     docker compose -p flexorch-tenant_a -f compose.tenant.yaml run --rm \
+#         -v "$PWD/scripts:/scripts:ro" orchestrator python /scripts/my_study.py
+#
+#   FLEXORCH_ACQUIRIUM_URL points Orchestrator() and flex-orch at the
+#   tenant's Acquirium (mode 3); the orchestrator holds no credentials.
+#
+# Every container runs as uid 1000 on a read-only root filesystem, with no
+# Docker socket. The tenant network is internal: no route out, none between
+# tenants. Only acquirium is on the tenant's database network.
+
+name: flexorch-${TENANT:?set TENANT}
+
+x-hardened: &hardened
+  image: ${FLEXORCH_IMAGE:-flexorch:dev}
+  user: "1000:1000"
+  read_only: true
+  tmpfs:
+    - /tmp:size=1g,uid=1000,gid=1000
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  acquirium:
+    <<: *hardened
+    command: ["acquirium", "server", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      ACQUIRIUM_DATA_DIR: /data
+      ACQUIRIUM_TIMESERIES_BACKEND: timescale
+      ACQUIRIUM_EXACT_ONLY: "true"
+      PG_DSN: host=flexorch-pg port=5432 dbname=${TENANT} user=${TENANT}
+      PGPASSFILE: /run/secrets/pgpass
+    secrets:
+      - source: pgpass
+        target: pgpass
+    volumes:
+      - data:/data
+    networks: [tenant, db]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)
+      interval: 5s
+      timeout: 10s
+      retries: 60
+    restart: unless-stopped
+
+  orchestrator:
+    <<: *hardened
+    profiles: [run] # not started by `up`; used with `run`
+    environment:
+      FLEXORCH_ACQUIRIUM_URL: http://acquirium:8000
+      FLEXORCH_TENANT: ${TENANT}
+    volumes:
+      - scratch:/work
+    networks: [tenant]
+    depends_on:
+      acquirium:
+        condition: service_healthy
+
+secrets:
+  pgpass:
+    file: ${FLEXORCH_SECRETS:?set FLEXORCH_SECRETS}/tenants/${TENANT}/pgpass
+
+volumes:
+  data:
+    name: flexorch_${TENANT}_data
+  scratch:
+    name: flexorch_${TENANT}_scratch
+
+networks:
+  tenant:
+    name: flexorch_${TENANT}
+    internal: true
+  db:
+    # Created by provision_tenant.sh and joined by the cluster's Postgres.
+    name: flexorch_${TENANT}_db
+    external: true

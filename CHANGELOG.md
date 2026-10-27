@@ -44,6 +44,17 @@
 - A root `README.md`.
 
 ### Added
+- Single-tenant deployment (PLAN.md M6): the image (`deploy/docker`), the
+  cluster and tenant stacks (`deploy/tenant`: Postgres + TimescaleDB with
+  pgBackRest, SeaweedFS as S3), provisioning, backups and point-in-time
+  restore scripts, and the isolation suite and restore drill
+  (`tests/test_deploy.py`, opt-in with `FLEXORCH_TEST_DEPLOY`), run on GitHub
+  by `.github/workflows/deploy.yml`.
+- `flex-orch verify` (`flex_orchestrator.verify`): a store's counts, tags and
+  value hashes, its problems, and `--against` an earlier report.
+- `Orchestrator()` with no store connects to `FLEXORCH_ACQUIRIUM_URL` when
+  it's set (mode 3), as a tenant stack sets it.
+- A `server` extra (FastAPI, uvicorn, PyJWT, httpx) for the Phase 2 server.
 - GitHub Actions CI (`.github/workflows/ci.yml`): `lint`, then `unit` and
   `component` on Linux and Windows and `integration` on Linux, each built
   from `environment-dev.yml`; also weekly, to catch upstream drift.

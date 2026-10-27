@@ -300,7 +300,10 @@ class Orchestrator:
         study: A study to select; it must exist.
         data_dir: The managed Acquirium's directory (modes 1 and 2).
         db: A Postgres URL without a password (mode 2).
-        acquirium_url: A running Acquirium (mode 3).
+        acquirium_url: A running Acquirium (mode 3). With no ``backend``,
+            ``data_dir``, ``db`` or ``acquirium_url``, ``FLEXORCH_ACQUIRIUM_URL``
+            (from ``environ``) selects mode 3: how a tenant stack points
+            scripts at its Acquirium (D16).
         db_credentials: An explicit Postgres login, for developers and tests.
         hooks: Hooks that replace the flex-pse defaults, slot by slot.
         registry: Where registered hook names resolve.
@@ -317,8 +320,8 @@ class Orchestrator:
             ``FLEXORCH_PLUGINS`` load too. Use
             :func:`~flex_orchestrator.ext.create_orchestrator` to get a
             plugin's orchestrator subclass.
-        environ: Where ``FLEXORCH_PLUGINS`` and ``FLEXORCH_RAY_ADDRESS`` are
-            read; ``os.environ`` by default.
+        environ: Where ``FLEXORCH_PLUGINS``, ``FLEXORCH_RAY_ADDRESS`` and
+            ``FLEXORCH_ACQUIRIUM_URL`` are read; ``os.environ`` by default.
         ray_address: The Ray cluster for studies with ``max_workers > 1``
             when their config names none (D13); ``FLEXORCH_RAY_ADDRESS`` if
             unset, else local Ray.
@@ -351,6 +354,14 @@ class Orchestrator:
     ) -> None:
         """Set up the orchestrator; see the class docstring for the arguments."""
         self.connection: Connection | None = None
+        if (
+            backend is None
+            and data_dir is None
+            and db is None
+            and acquirium_url is None
+        ):
+            env = os.environ if environ is None else environ
+            acquirium_url = env.get("FLEXORCH_ACQUIRIUM_URL") or None
         if backend is None:
             self.connection = connect(
                 data_dir=data_dir,

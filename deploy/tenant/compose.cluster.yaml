@@ -1,0 +1,93 @@
+# The shared cluster under every tenant stack (PLAN.md D14, M6):
+#
+# - postgres: Postgres 17 + TimescaleDB, one database and role per tenant.
+#   WAL is archived continuously with pgBackRest, so any tenant can be
+#   restored to a point in time.
+# - seaweedfs: an S3 server standing in for off-host object storage. pgBackRest
+#   and the tenant backups write to its bucket over TLS, as they would to S3.
+#
+# Started by init_cluster.sh, which writes the secrets this file mounts:
+#
+#   ./init_cluster.sh            # first time: secrets, start, bucket, first backup
+#   docker compose -f compose.cluster.yaml -p flexorch-cluster up -d
+#
+# Tenants reach Postgres only through their own flexorch_<tenant>_db network,
+# which provision_tenant.sh creates and connects this container to.
+
+name: flexorch-cluster
+
+services:
+  postgres:
+    image: ${PG_IMAGE:-timescale/timescaledb-ha:pg17.6-ts2.22.0}
+    container_name: flexorch-pg
+    environment:
+      POSTGRES_PASSWORD_FILE: /etc/flexorch/postgres_password
+      PGBACKREST_CONFIG: /etc/flexorch/pgbackrest.conf
+      PGBACKREST_STANZA: flexorch
+    command:
+      - postgres
+      - -c
+      - listen_addresses=*
+      - -c
+      - hba_file=/etc/flexorch/pg_hba.conf
+      - -c
+      - wal_level=replica
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=pgbackrest --stanza=flexorch archive-push %p
+      - -c
+      - archive_timeout=60
+      - -c
+      - password_encryption=scram-sha-256
+    volumes:
+      - pgdata:/home/postgres/pgdata
+      - ./pg_hba.conf:/etc/flexorch/pg_hba.conf:ro
+      - ${FLEXORCH_SECRETS:?run init_cluster.sh}/cluster/postgres_password:/etc/flexorch/postgres_password:ro
+      - ${FLEXORCH_SECRETS}/cluster/pgbackrest.conf:/etc/flexorch/pgbackrest.conf:ro
+      - ${FLEXORCH_SECRETS}/cluster/ca.crt:/etc/flexorch/ca.crt:ro
+      - ${FLEXORCH_SECRETS}/cluster/backup_pass:/etc/flexorch/backup_pass:ro
+    networks: [cluster]
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "/var/run/postgresql", "-U", "postgres"]
+      interval: 5s
+      retries: 30
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    restart: unless-stopped
+
+  seaweedfs:
+    image: ${S3_IMAGE:-chrislusf/seaweedfs:3.97}
+    container_name: flexorch-s3
+    command:
+      - server
+      - -dir=/data
+      - -s3
+      - -s3.port=8333
+      - -s3.config=/etc/flexorch/s3.json
+      - -s3.cert.file=/etc/flexorch/s3.crt
+      - -s3.key.file=/etc/flexorch/s3.key
+    volumes:
+      - s3data:/data
+      - ${FLEXORCH_SECRETS}/cluster/s3.json:/etc/flexorch/s3.json:ro
+      - ${FLEXORCH_SECRETS}/cluster/s3.crt:/etc/flexorch/s3.crt:ro
+      - ${FLEXORCH_SECRETS}/cluster/s3.key:/etc/flexorch/s3.key:ro
+    networks: [cluster]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status"]
+      interval: 5s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+    name: flexorch_pgdata
+  s3data:
+    name: flexorch_s3data
+
+networks:
+  cluster:
+    name: flexorch_cluster
+    internal: true

@@ -9,6 +9,7 @@ dependencies:
   - python=3.12
   - scip=10.0
   - highspy=1.15
+  - git # pip installs the pinned flex-pse and Acquirium below from git
   - pip
   - pip:
       # flex-pse v0.2.0 (upstream tag; flowsheet spec schema 0.1.0)

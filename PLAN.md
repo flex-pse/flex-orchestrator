@@ -1682,6 +1682,39 @@ D21.
     `verify` passes with the same studies, tags and sample values.
   - Scripts 1–3 run inside a tenant stack, in mode 3.
   - `0.1.0` (the library) is released.
+- **Status: built, apart from the release** (`0.1.0` is tagged and published by hand). Choices made:
+  - **Image** `deploy/docker/Dockerfile`: `mambaorg/micromamba:2.3.3`, `environment.yml` (which now lists `git`,
+    for its pinned git installs), `idaes get-extensions`, this package; user `flexorch` (uid 1000), the env on
+    `PATH` so `docker exec` and health checks work, and every stack container read-only.
+  - **Cluster** `timescale/timescaledb-ha:pg17.6-ts2.22.0` (pgBackRest 2.56 included) and **SeaweedFS 3.97** as the
+    local S3 stand-in: MinIO stopped publishing images. pgBackRest needs S3 over TLS, so `init_cluster.sh` makes a CA
+    and a certificate; the repository is encrypted (AES-256). A fresh SeaweedFS can't read the first bucket until
+    its gateway restarts; `init_cluster.sh` checks a write reads back and restarts it once.
+  - **Networks:** each tenant has an internal network and an internal `flexorch_<t>_db` network that Postgres
+    joins; no tenant is on another's, and the orchestrator is on no database network. `pg_hba.conf` allows a role
+    only its own database (`sameuser`), and the admin only over the socket.
+  - **The password** is a libpq password file (`PGPASSFILE`), mounted only into the tenant's Acquirium: it is in no
+    environment variable, DSN or command line. `psql` gets it on stdin.
+  - **Tenant backups** stop the tenant's Acquirium for the dump and volume copy, so they match; the graph export is
+    taken just before. A point-in-time restore runs pgBackRest into a throwaway Postgres (the whole cluster when
+    the database is newer than the last full backup) and dumps the tenant from it. Timescale's job catalog names
+    the source role, so the restore creates a stand-in for a deleted tenant and hands the jobs to the new one.
+  - **`flex-orch verify`** (`flex_orchestrator.verify`): per study and kind, run counts by status, tags and value
+    hashes of a sample; problems (a tag stored twice, runs left running, unreadable values); `--against` a
+    report exits 1 on any difference.
+  - **Mode 3 by default:** `Orchestrator()` with no store uses `FLEXORCH_ACQUIRIUM_URL` (D16), so scripts run
+    unchanged in a stack. The quickstart scripts 1–3 are gone; `deploy/tenant/smoke.py` (data, spec, a
+    `model_inputs` sweep, HiGHS solves) is what runs there.
+  - **Tests** `tests/test_deploy.py`, opt-in with `FLEXORCH_TEST_DEPLOY` (a command prefix such as
+    `wsl.exe -d Ubuntu --` on Windows): the smoke study in mode 3; database (sameuser, no CONNECT for PUBLIC, role
+    attributes), network (no route to another tenant's Acquirium by name or address, none to Postgres from the
+    orchestrator, none out), volume and secret isolation; uid 1000, read-only root, no capabilities, no Docker
+    socket; and the restore drill. All pass (about 4.5 minutes).
+  - **CI:** `.github/workflows/deploy.yml` builds the image (with GitHub's build cache) and runs these tests on
+    `ubuntu-latest`, when the deployment's files change, weekly and by hand, with throwaway secrets; container logs
+    are uploaded on failure. Its own workflow, so it doesn't hold up CI.
+  - **Not done:** the isolation suite with a hostile plugin (M7, with the server), and the `[server]` extra's code
+    (M7; the extra itself is in `pyproject.toml`).
 
 ### Phase 2: HTTP and integrations
 

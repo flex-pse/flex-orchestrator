@@ -1,0 +1,4 @@
+# Run inside Linux containers and shells: keep LF even on a Windows checkout.
+*.sh text eol=lf
+deploy/** text eol=lf
+.dockerignore text eol=lf
