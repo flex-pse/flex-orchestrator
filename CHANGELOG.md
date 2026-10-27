@@ -44,6 +44,27 @@
 - A root `README.md`.
 
 ### Added
+- Local mode for the HTTP API (`flex-orch serve --local`, `Settings.local()`):
+  no tokens, every request is the local user as owner, loopback only (it
+  refuses other clients, `Host`s and browser `Origin`s). The client needs no
+  token for it.
+- Model specs over HTTP carry the files they reference (a tariff file, say):
+  `store_model_spec(..., base_dir=)` on the client sends them, and they are
+  stored under the same names as from Python.
+- `examples/server_examples/`: the surrogate sweep through
+  `Orchestrator(url=...)`, on a local-mode server (`local_mode.py`) and on one
+  with users and tokens (`users_and_tokens.py`: an editor, a viewer, and what
+  is refused). `python -m
+  flex_orchestrator` runs `flex-orch`.
+- The tenant's HTTP API (PLAN.md M7, the `server` extra): `create_app`,
+  `flex-orch serve`, JWT (JWKS) or static-token auth with viewer / editor /
+  owner roles, the §4 routes (studies, specs, data, results as D17 files,
+  delete, export and import zips, commands, a job queue recorded in
+  `flexorch::jobs`), and plugin routers under `/ext/<plugin>`.
+- `Orchestrator(url=..., token=...)`, a client for a deployed tenant, and
+  `flex-orch login` to save a token.
+- `Orchestrator.user`, recorded as `flexorch_user` (the HTTP server sets it to
+  the caller); the memory backend is safe to share between threads.
 - Single-tenant deployment (PLAN.md M6): the image (`deploy/docker`), the
   cluster and tenant stacks (`deploy/tenant`: Postgres + TimescaleDB with
   pgBackRest, SeaweedFS as S3), provisioning, backups and point-in-time

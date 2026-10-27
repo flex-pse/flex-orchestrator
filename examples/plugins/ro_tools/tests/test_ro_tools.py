@@ -39,3 +39,20 @@ def test_the_subclass_stamps_and_refuses():
     with pytest.raises(ValueError, match="scratch"):
         orch.store_model_data("scratch_1", cost(1.0))
     assert orch.default_export_selection()["include"][0] == "plant.*"
+
+
+def test_the_route_over_http():
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from flex_orchestrator.server.testing import make_test_app, token_for
+
+    with TestClient(make_test_app(plugins=[plugin])) as client:
+        orch = client.app.state.orchestrator
+        assert isinstance(orch, ROOrchestrator)
+        orch.create_study("s")
+        orch.store_model_data("a", cost(3.0))
+        viewer = {"Authorization": f"Bearer {token_for('viewer')}"}
+        found = client.get("/ext/ro_tools/costs?study=s", headers=viewer)
+        assert found.json() == {"a": 3.0}
+        assert client.get("/ext/ro_tools/costs?study=s").status_code == 401

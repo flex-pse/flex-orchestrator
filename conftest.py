@@ -74,11 +74,25 @@ def _no_solver_in_unit_tier(request, monkeypatch):
 
         monkeypatch.setattr(facade.SolverFacade, "solve", _forbidden)
 
-    def _no_network(*args, **kwargs):
+    connect, connect_ex = socket.socket.connect, socket.socket.connect_ex
+
+    def _loopback(address):
+        # An event loop's own socket pair (asyncio on Windows, so FastAPI's
+        # TestClient) connects to itself; nothing else may.
+        return isinstance(address, tuple) and address[0] in ("127.0.0.1", "::1")
+
+    def _no_network(self, address, *args, **kwargs):
+        if _loopback(address):
+            return connect(self, address, *args, **kwargs)
+        raise RuntimeError("network access is forbidden in unit-tier tests")
+
+    def _no_network_ex(self, address, *args, **kwargs):
+        if _loopback(address):
+            return connect_ex(self, address, *args, **kwargs)
         raise RuntimeError("network access is forbidden in unit-tier tests")
 
     monkeypatch.setattr(socket.socket, "connect", _no_network)
-    monkeypatch.setattr(socket.socket, "connect_ex", _no_network)
+    monkeypatch.setattr(socket.socket, "connect_ex", _no_network_ex)
 
 
 @pytest.fixture

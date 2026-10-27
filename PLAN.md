@@ -1213,6 +1213,16 @@ gateway ───► │ flex-orchestrator (lib / Phase 2 API) ──► acquiri
   token=...)`, or the token is read from `FLEXORCH_TOKEN`.
 - When the orchestrator runs with no control plane (a single lab server), it falls back to static hashed API tokens in
   `FLEXORCH_API_TOKENS`. There is still no password store.
+- **The app's login is the control plane's.** A web app either lets users register or has an admin create them,
+  with a username and password (needed for air-gapped sites) or an email link once the email is approved. Either
+  way the identity provider (Keycloak, self-hosted, works air-gapped) or the web app issuing its own JWTs
+  (`FLEXORCH_OIDC_JWKS_URL` names its keys) holds the accounts; the orchestrator only accepts their tokens. It has
+  no login or registration route, and never makes a user's password. (The tenant's database password, which
+  `provision_tenant.sh` makes, is a different thing: only the tenant's Acquirium uses it, and no person sees it.)
+- **Local mode** (`flex-orch serve --local`, `Settings.local()`) is for a local app on one person's machine: there
+  are no users and no tokens, and every request is the logged-in user, as owner. It binds loopback only, and refuses
+  any request that isn't from a loopback client, names a non-loopback `Host` (DNS rebinding), or carries a
+  non-loopback `Origin` (another website calling it from the user's browser).
 
 **D16 — Control plane contract.** The multi-user control plane and UI are **separate projects**. This repo provides
 what they need:
@@ -1742,6 +1752,40 @@ D21.
   - The sample plugin's route and command work over HTTP with an editor token. With no token, or a token for the
     wrong tenant, they return 401/403.
   - A plugin that claims a reserved prefix fails at startup.
+- **Status: built**, with these choices (decided 2026-10-27):
+  - **`flex_orchestrator.server`** (the `[server]` extra): `create_app(settings, plugins)`; `Settings` from the D16
+    environment (`FLEXORCH_TENANT`, `FLEXORCH_OIDC_ISSUER` / `_AUDIENCE` / `_JWKS_URL`, `FLEXORCH_API_TOKENS` and
+    `FLEXORCH_API_TOKENS_FILE` as `user:role:sha256:<hex>`); `auth.py` checks a JWT against the issuer's JWKS
+    (signature, `iss`, `aud`, `exp`; `tenant` must be this server's, `role` one of viewer < editor < owner), or a
+    static token by its hash. `deps.py` is the public dependency set for plugin routes. Library errors map to HTTP:
+    exists 409, not found 404, invalid 422, store 503. Each request works on a shallow copy of the tenant's
+    orchestrator, so the selected study is per request; the memory backend now locks its methods.
+  - **Results and datasets travel as their D17 files** (`ResultFile`, `DatasetFile`, the published schemas), so
+    `GET /studies/{s}/results/{tag}` equals `export_result`. `/results` pages (`limit`, `offset`, `next`). A model
+    spec's files go with it, base64, as `<sha256[:12]>/<filename>` (at most 64 MiB), and are stored under the names
+    Python gives them, so a spec stored over HTTP has the same hash.
+  - **Local mode** (D15): `flex-orch serve --local` / `Settings.local()`, no tokens, the local user as owner,
+    loopback clients, `Host` and `Origin` only. `examples/server_examples/` runs the surrogate sweep through the
+    client, in local mode and with users and tokens.
+  - **Jobs:** one worker thread per app runs `long_running` commands (and uploads' imports) in order; each job is
+    recorded in `flexorch::jobs`, so `GET /jobs/{id}` answers after a restart, and a job left running is reported
+    `interrupted`. Cancelling uses the command's `Progress`.
+  - **Plugin routers** under `/ext/<plugin>` with `current_principal` on the whole router and an OpenAPI tag per
+    plugin; reserved prefixes fail at startup. The sample plugin has `GET /ext/ro_tools/costs`.
+  - **The client** `Orchestrator(url=, token=)` returns `client.RemoteOrchestrator` (standard library HTTP): studies,
+    specs, data, results (as `LoadedResult`), delete, `execute_study`, `fit_surrogate`, commands, jobs,
+    export and import; errors come back as the library's, a refused token as `AccessError`.
+  - **`flex-orch login`** saves a token you paste (stdin or a hidden prompt, never the command line; `--url` checks
+    it) to `~/.flexorch/token`; there is no device-code flow. `flex-orch serve` runs the app on the given store.
+  - **Tenant stack:** an `api` service (`--profile api`), no published port; `deploy/tenant/api_token.sh` makes a
+    token and keeps only its hash.
+  - **Tests:** `server/tests/` (unit, in-process): every bad-credential case, a walk of every route in the OpenAPI
+    schema (401 without a token, 403 with another tenant's), roles on routes and commands, HTTP and Python storing
+    the same, jobs (succeed, fail, cancel, survive a restart), export and import zips (unsafe ones refused), plugin
+    routes, the client, `serve` and `login`. `tests/test_deploy.py` adds the API in a stack: a flex-pse study over
+    HTTP, a viewer's delete refused, another tenant's token refused, another tenant's API unreachable.
+  - **Not done:** a Keycloak container and the device-code login (tokens are pasted; JWTs are tested with a key
+    the tests make), and the isolation suite with a hostile plugin (M8, with the full auth layer).
 
 #### M8 — Multi-tenant integration (≈ 1.5–2 wks)
 - The control plane contract (D16): the env contract, health and ready endpoints, OpenAPI export, and a generated

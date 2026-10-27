@@ -27,6 +27,7 @@ which each tenant reaches only as its own role.
 | `backup_cluster.sh [full\|diff\|incr]` | the nightly pgBackRest backup, then every tenant's |
 | `restore_tenant.sh <t> <time\|id> --into <new>` | point-in-time (or from a tenant backup) restore into a new tenant |
 | `smoke.py` | a short study a tenant's orchestrator container runs, for checking a stack |
+| `api_token.sh <t> <user> <role>` | a token for the tenant's HTTP API, printed once; only its hash is kept |
 
 The image is `deploy/docker/Dockerfile`: one image for the orchestrator, the
 Acquirium server and Ray nodes.
@@ -66,6 +67,25 @@ TENANT=tenant_a docker compose -f compose.tenant.yaml -p flexorch-tenant_a run -
 ```
 
 Its `/work` is the tenant's scratch volume; everything else is read-only.
+
+## The HTTP API
+
+A tenant's API (`flex-orch serve`, PLAN.md M7) is the `api` service, started
+on demand:
+
+```bash
+./api_token.sh tenant_a alice editor            # prints the token once
+TENANT=tenant_a docker compose -f compose.tenant.yaml -p flexorch-tenant_a \
+    --profile api up -d --wait api
+```
+
+It's on the tenant's network only (no published port; a gateway comes in
+M8), so clients there use `Orchestrator(url="http://api:8080", token=...)`.
+Tokens are viewer, editor or owner. `api_token.sh` keeps only each token's
+SHA-256, in `$FLEXORCH_SECRETS/tenants/<t>/api_tokens`; delete a line and
+restart `api` to revoke one. With an identity provider instead, set
+`FLEXORCH_OIDC_ISSUER` and `FLEXORCH_OIDC_AUDIENCE`: JWTs must carry the
+tenant's name in a `tenant` claim and a `role` claim.
 
 ## Secrets
 

@@ -13,6 +13,10 @@
 #
 #   FLEXORCH_ACQUIRIUM_URL points Orchestrator() and flex-orch at the
 #   tenant's Acquirium (mode 3); the orchestrator holds no credentials.
+# - api: the tenant's HTTP API (Phase 2, `flex-orch serve`), started with
+#   `--profile api`. It takes tokens from api_token.sh (FLEXORCH_API_TOKENS_FILE)
+#   or an identity provider (FLEXORCH_OIDC_ISSUER / _AUDIENCE), and publishes no
+#   port: clients reach it on the tenant network (the gateway, M8).
 #
 # Every container runs as uid 1000 on a read-only root filesystem, with no
 # Docker socket. The tenant network is internal: no route out, none between
@@ -69,6 +73,36 @@ services:
     depends_on:
       acquirium:
         condition: service_healthy
+
+  api:
+    <<: *hardened
+    profiles: [api]
+    command: ["flex-orch", "serve", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      FLEXORCH_TENANT: ${TENANT}
+      FLEXORCH_ACQUIRIUM_URL: http://acquirium:8000
+      FLEXORCH_API_TOKENS_FILE: /etc/flexorch/api_tokens
+      FLEXORCH_OIDC_ISSUER: ${FLEXORCH_OIDC_ISSUER:-}
+      FLEXORCH_OIDC_AUDIENCE: ${FLEXORCH_OIDC_AUDIENCE:-}
+      FLEXORCH_PLUGINS: ${FLEXORCH_PLUGINS:-}
+    volumes:
+      # Token hashes, not tokens: provision_tenant.sh creates it, api_token.sh adds.
+      - ${FLEXORCH_SECRETS}/tenants/${TENANT}/api_tokens:/etc/flexorch/api_tokens:ro
+      - scratch:/work
+    networks: [tenant]
+    depends_on:
+      acquirium:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)
+      interval: 5s
+      timeout: 10s
+      retries: 60
+    restart: unless-stopped
 
 secrets:
   pgpass:

@@ -44,10 +44,12 @@ DEPLOY = _linux(REPO / "deploy" / "tenant")
 
 def sh(script: str, check: bool = True) -> str:
     """Run ``script`` in ``deploy/tenant`` with ``lib.sh`` sourced; return stdout."""
-    # Bytes, so Windows doesn't turn the script's newlines into CRLF.
+    # Bytes, so Windows doesn't turn the script's newlines into CRLF. The braces
+    # make bash read the whole script before running it, so a command that
+    # reads stdin (docker exec -i) can't swallow the lines after it.
     done = subprocess.run(
         [*PREFIX, "bash", "-s"],
-        input=f"cd {shlex.quote(DEPLOY)}\nsource lib.sh\n{script}\n".encode(),
+        input=f"{{\ncd {shlex.quote(DEPLOY)}\nsource lib.sh\n{script}\n}}\n".encode(),
         capture_output=True,
         timeout=3000,
     )
@@ -221,6 +223,76 @@ def test_containers_are_locked_down(tenants):
     assert "Read-only file system" in run(
         tenants["a"], "sh -c 'touch /usr/x 2>&1 || true'"
     )
+
+
+# The HTTP API in a stack (M7)
+
+REMOTE = """
+import json, sys
+import numpy as np, pandas as pd
+from flex_orchestrator import Orchestrator
+from flex_orchestrator.errors import AccessError
+from flex_orchestrator.testing import DEMO_SPEC
+
+owner, viewer, other = sys.argv[1:4]
+api = "http://api:8080"
+orch = Orchestrator(url=api, token=owner)
+orch.create_study("over_http")
+hours = pd.date_range("2025-07-07", periods=48, freq="h", tz="UTC")
+orch.store_data("pump", pd.DataFrame({"flow": 3.0 + np.arange(48) / 8}, hours),
+                units={"flow": "m^3/hr"})
+orch.store_model_spec("demo", DEMO_SPEC)
+pump = {"dataset": "pump", "columns": ["flow"], "rename": {"flow": "demo.pump.flow_in"}}
+run = orch.execute_study({
+    "base_model_spec": "demo",
+    "model_inputs": [pump],
+    "export": {"include": ["costing.aggregate_operating_cost"]},
+    "output_name": "solved",
+})
+refused = {}
+for name, token, study, call in [
+    ("viewer_delete", viewer, "over_http", lambda o: o.delete("result", "solved")),
+    ("other_tenant", other, None, lambda o: o.studies()),
+    ("junk", "junk", None, lambda o: o.studies()),
+]:
+    try:
+        call(Orchestrator(url=api, token=token, study=study))
+        refused[name] = None
+    except AccessError as exc:
+        refused[name] = exc.status
+cost = orch.result("solved").scalars()["costing.aggregate_operating_cost"]
+print(json.dumps({"counts": run.counts(), "cost": cost, "refused": refused}))
+"""
+
+
+def test_the_api_serves_only_its_tenant(tenants):
+    a, b = tenants["a"], tenants["b"]
+    tokens = {
+        "owner": sh(f"bash api_token.sh {a} alice owner 2>/dev/null").strip(),
+        "viewer": sh(f"bash api_token.sh {a} vic viewer 2>/dev/null").strip(),
+        "other": sh(f"bash api_token.sh {b} bob owner 2>/dev/null").strip(),
+    }
+    assert all(len(t) == 48 for t in tokens.values())
+    for tenant in (a, b):
+        sh(f"tenant_compose {tenant} --profile api up -d --wait api >/dev/null 2>&1")
+    # Only the hashes are kept.
+    assert tokens["owner"] not in sh(f'cat "$FLEXORCH_SECRETS/tenants/{a}/api_tokens"')
+    args = " ".join(shlex.quote(tokens[k]) for k in ("owner", "viewer", "other"))
+    found = json.loads(
+        run(a, f"python -c {shlex.quote(REMOTE)} {args}").strip().splitlines()[-1]
+    )
+    assert found["counts"] == {"succeeded": 1} and found["cost"] > 0
+    assert found["refused"] == {"viewer_delete": 403, "other_tenant": 401, "junk": 401}
+    # Another tenant's API isn't even reachable.
+    b_api = sh(f"tenant_compose {b} --profile api ps -q api").strip()
+    b_name = inspect(b_api, "{{.Name}}").lstrip("/")
+    assert reach(a, b_name, 8080).startswith("closed")
+    assert reach(a, "api", 8080) == "open"
+    hardened = inspect(
+        b_api,
+        "{{.Config.User}} {{.HostConfig.ReadonlyRootfs}} {{json .HostConfig.CapDrop}}",
+    )
+    assert hardened == '1000:1000 true ["ALL"]'
 
 
 # The restore drill (D14): delete a tenant, restore it at a chosen time

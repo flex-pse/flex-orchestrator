@@ -71,6 +71,11 @@ omit = ["*/tests/*"]
 # (PLAN.md D20).
 select = ["E", "F", "I", "B", "UP", "D"]
 pydocstyle.convention = "google"
+# FastAPI declares parameters as Depends(...) / Query(...) defaults.
+flake8-bugbear.extend-immutable-calls = [
+    "fastapi.Depends", "fastapi.Query", "fastapi.Body", "fastapi.File",
+    "fastapi.Form", "fastapi.Header", "fastapi.Path",
+]
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["D"]

@@ -304,6 +304,11 @@ class Orchestrator:
             ``data_dir``, ``db`` or ``acquirium_url``, ``FLEXORCH_ACQUIRIUM_URL``
             (from ``environ``) selects mode 3: how a tenant stack points
             scripts at its Acquirium (D16).
+        url: A deployed tenant's HTTP API (Phase 2, D15). Then this returns a
+            :class:`~flex_orchestrator.client.RemoteOrchestrator`, which takes
+            only ``token``, ``study``, ``frame`` and ``environ``.
+        token: The bearer token for ``url``; ``FLEXORCH_TOKEN`` or the one
+            ``flex-orch login`` saved if ``None``.
         db_credentials: An explicit Postgres login, for developers and tests.
         hooks: Hooks that replace the flex-pse defaults, slot by slot.
         registry: Where registered hook names resolve.
@@ -326,12 +331,32 @@ class Orchestrator:
             when their config names none (D13); ``FLEXORCH_RAY_ADDRESS`` if
             unset, else local Ray.
 
+    Attributes:
+        user: Who runs and stores are recorded as (``flexorch_user``); if
+            ``None``, ``FLEXORCH_USER`` or the login name. The HTTP server sets
+            it to the caller's (D15).
+
     Example:
         >>> from flex_orchestrator.backend import MemoryBackend
         >>> orch = Orchestrator(MemoryBackend())
         >>> orch.create_study("example_a")
         'example_a'
     """
+
+    def __new__(cls, *args: Any, url: str | None = None, **kwargs: Any) -> Any:
+        """Return a remote orchestrator for ``url``; otherwise this class's."""
+        if url is None:
+            return super().__new__(cls)
+        from flex_orchestrator.client import RemoteOrchestrator
+
+        allowed = {"token", "study", "frame", "environ"}
+        extra = sorted(set(kwargs) - allowed) + (["backend"] if args else [])
+        if extra:
+            raise ValueError(
+                f"url= is a tenant's HTTP API; it takes only {sorted(allowed)}, "
+                f"not {extra}."
+            )
+        return RemoteOrchestrator(url, **kwargs)
 
     def __init__(
         self,
@@ -341,6 +366,8 @@ class Orchestrator:
         data_dir: str | os.PathLike[str] | None = None,
         db: str | None = None,
         acquirium_url: str | None = None,
+        url: str | None = None,
+        token: str | None = None,
         db_credentials: DBCredentials | None = None,
         hooks: HookSet | None = None,
         registry: HookRegistry | None = None,
@@ -353,7 +380,10 @@ class Orchestrator:
         ray_address: str | None = None,
     ) -> None:
         """Set up the orchestrator; see the class docstring for the arguments."""
+        if token is not None:
+            raise ValueError("token= goes with url=, a tenant's HTTP API.")
         self.connection: Connection | None = None
+        self.user: str | None = None
         if (
             backend is None
             and data_dir is None
@@ -1866,7 +1896,7 @@ class Orchestrator:
             "flexorch_version": version("flex-orchestrator"),
             "flexpse_version": _version_of("flex-pse"),
             "acquirium_version": _version_of("acquirium"),
-            "flexorch_user": _user(),
+            "flexorch_user": self.user or _user(),
         }
         if kind == RESULT_KIND:
             hooks = self.hooks.merged(getattr(self._call, "hooks", None) or HookSet())

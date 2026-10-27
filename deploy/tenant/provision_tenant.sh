@@ -42,6 +42,10 @@ SQL
     unset password
 fi
 [[ -f "$secret" ]] || die "$tenant exists but its secret $secret is missing; re-provision it"
+# The API's token hashes (api_token.sh adds them); empty until then, and a
+# file, so Docker never mounts a directory in its place.
+tokens="$FLEXORCH_SECRETS/tenants/$tenant/api_tokens"
+[[ -f "$tokens" ]] || : | write_secret "$tokens"
 
 if ! docker network inspect "flexorch_${tenant}_db" >/dev/null 2>&1; then
     docker network create --internal "flexorch_${tenant}_db" >/dev/null

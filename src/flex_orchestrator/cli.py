@@ -10,6 +10,8 @@
                                           [--compress] [--overwrite]
     flex-orch [CONNECTION] import PATH [--name N] [--on-existing error|skip]
     flex-orch [CONNECTION] verify [--study S ...] [--samples N] [--against FILE]
+    flex-orch [CONNECTION] serve [--local] [--host H] [--port P]  (needs [server])
+    flex-orch login [--url URL]                  (the token comes on stdin)
 
 ``CONNECTION`` picks the store as ``Orchestrator()`` does (D11):
 ``--data-dir`` (local, the default ``.flexorch``), ``--db`` with
@@ -24,9 +26,18 @@ per field, numbers and strings as typed, lists as several values, booleans as
 ``--flag`` / ``--no-flag``, and anything else as JSON. Every subcommand prints
 its result as JSON. ``verify`` exits 1 when the store has a problem or, with
 ``--against``, differs from that earlier report.
+
+``serve`` runs the tenant's HTTP API (Phase 2) on that store, configured by
+the ``FLEXORCH_*`` environment (:class:`~flex_orchestrator.server.Settings`).
+With ``--local`` it takes no tokens: every request is you, as owner, and it
+serves this machine only (loopback hosts).
+``login`` saves a token for ``Orchestrator(url=...)``: read from stdin, or
+asked for without echo, never from the command line; with ``--url`` it is
+checked first.
 """
 
 import argparse
+import dataclasses
 import json
 import sys
 import types
@@ -46,6 +57,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"unrecognized arguments: {' '.join(rest)}")
     if args.files and args.data_dir:
         parser.error("--files is the store itself; it takes no --data-dir")
+    if args.action == "login":
+        return _login(args)
+    if args.action == "serve":
+        return _serve(args)
     try:
         with _orchestrator(args) as orch:
             result = _run(orch, args, rest)
@@ -122,7 +137,85 @@ def _parser() -> argparse.ArgumentParser:
     check.add_argument(
         "--against", metavar="FILE", help="an earlier report to compare with"
     )
+
+    serve = actions.add_parser("serve", help="run the tenant's HTTP API")
+    serve.add_argument(
+        "--local", action="store_true", help="no tokens: you, on this machine only"
+    )
+    serve.add_argument("--host", default="127.0.0.1", help="bind host")
+    serve.add_argument("--port", type=int, default=8080, help="bind port")
+
+    login = actions.add_parser(
+        "login", help="save a token for Orchestrator(url=...); it comes on stdin"
+    )
+    login.add_argument("--url", help="check the token against this tenant first")
     return parser
+
+
+def _serve(args: argparse.Namespace) -> int:
+    try:
+        import uvicorn
+
+        from flex_orchestrator.server import Settings, create_app
+    except ImportError as exc:
+        print(
+            f"flex-orch: serve needs flex-orchestrator[server] ({exc})", file=sys.stderr
+        )
+        return 1
+    if args.local and args.host not in ("127.0.0.1", "::1", "localhost"):
+        print(
+            "flex-orch: --local serves loopback only (--host 127.0.0.1)",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        settings = Settings.local() if args.local else Settings.from_env()
+    except ValueError as exc:
+        print(f"flex-orch: {exc}", file=sys.stderr)
+        return 1
+    store = {
+        key: value
+        for key, value in (
+            ("data_dir", args.data_dir),
+            ("db", args.db),
+            ("acquirium_url", args.acquirium_url),
+        )
+        if value is not None
+    }
+    if args.files:
+        from flex_orchestrator.backend.files import FileBackend
+
+        store = {"backend": FileBackend(args.files)}
+    settings = dataclasses.replace(
+        settings,
+        plugins=tuple(args.plugin),
+        orchestrator={**settings.orchestrator, **store},
+    )
+    uvicorn.run(create_app(settings), host=args.host, port=args.port)
+    return 0
+
+
+def _login(args: argparse.Namespace) -> int:
+    import getpass
+
+    from flex_orchestrator.client import RemoteOrchestrator, save_token
+
+    if sys.stdin.isatty():
+        token = getpass.getpass("Token: ")
+    else:
+        token = sys.stdin.readline()
+    token = token.strip()
+    if not token:
+        print("flex-orch: no token given", file=sys.stderr)
+        return 1
+    if args.url:
+        try:
+            RemoteOrchestrator(args.url, token).studies()
+        except FlexOrchestratorError as exc:
+            print(f"flex-orch: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
+    print(json.dumps({"saved": str(save_token(token))}))
+    return 0
 
 
 def _orchestrator(args: argparse.Namespace) -> Any:

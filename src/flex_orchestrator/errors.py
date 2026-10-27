@@ -138,3 +138,19 @@ class ArchiveError(FlexOrchestratorError):
     Raised for an export into a folder that isn't empty, a file whose schema
     version this version doesn't read, and a checksum that doesn't match.
     """
+
+
+class AccessError(FlexOrchestratorError):
+    """A tenant's server refused the call (PLAN.md D15).
+
+    Raised by the HTTP client for no or an invalid token (``status`` 401), or
+    a token without the role the call needs or for another tenant (403).
+
+    Attributes:
+        status: The HTTP status.
+    """
+
+    def __init__(self, message: str, status: int) -> None:
+        """Keep the status with the message."""
+        super().__init__(message)
+        self.status = status

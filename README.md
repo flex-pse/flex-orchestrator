@@ -49,6 +49,34 @@ line it's `flex-orch --files runs ...`. One process writes a folder at a time,
 and there is no Acquirium query API (`orch.acquirium`) or unit verification.
 See [examples/ro_study/store_on_disk.py](examples/ro_study/store_on_disk.py).
 
+### A deployed tenant, over HTTP
+
+A tenant stack can serve its HTTP API (`pip install -e ".[server]"`, then
+`flex-orch serve`; see [deploy/tenant](deploy/tenant/README.md)). From
+anywhere, `Orchestrator(url=...)` is a client for it, with the same methods
+for what the API covers:
+
+```python
+from flex_orchestrator import Orchestrator
+
+orch = Orchestrator(url="https://flex.example.org/tenant-a", token="...")
+orch.select_study("example_a")
+run = orch.execute_study(config)        # runs on the tenant's job queue
+costs = {r.tag: r.scalars() for r in orch.stored_model_results()}
+```
+
+The token is `token=`, else `FLEXORCH_TOKEN`, else the one `flex-orch login`
+saved (it reads the token from stdin). A token is for one tenant and a role:
+viewers read, editors store and run, owners delete. Logins (users, passwords,
+email) belong to the identity provider or web app that issues the tokens; the
+orchestrator only checks them.
+
+For a local app, `flex-orch serve --local` takes no tokens: every request is
+you, as owner, and it serves this machine only. `Orchestrator(url=
+"http://127.0.0.1:8080")` then needs no token.
+[examples/server_examples/](examples/server_examples/README.md) runs a study
+through a local server, and through one with users and tokens.
+
 ## Quick start
 
 Trimmed from [examples/ro_surrogates/example.py](examples/ro_surrogates/example.py),

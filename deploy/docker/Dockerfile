@@ -37,7 +37,7 @@ RUN idaes get-extensions
 
 COPY --chown=${MAMBA_USER}:${MAMBA_USER} pyproject.toml README.md /opt/flex-orchestrator/
 COPY --chown=${MAMBA_USER}:${MAMBA_USER} src /opt/flex-orchestrator/src
-RUN pip install --no-deps --no-cache-dir /opt/flex-orchestrator
+RUN pip install --no-cache-dir "/opt/flex-orchestrator[server]"
 
 # The env is on PATH without the entrypoint too: docker exec and health checks
 # don't go through it.

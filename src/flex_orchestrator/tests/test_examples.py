@@ -146,6 +146,24 @@ def test_ro_study(name, export_folder, ro_study_acquirium):
 
 
 @pytest.mark.needs_highs
+@pytest.mark.parametrize("name", ["local_mode", "users_and_tokens"])
+def test_server_examples(name):
+    pytest.importorskip("acquirium")
+    pytest.importorskip("flexparameterize")
+    pytest.importorskip("fastapi")  # the server extra
+    out = "\n" + script(EXAMPLES / "server_examples" / f"{name}.py")
+    for tag in STUDY_TAGS["sweep_surrogates"]:
+        assert f"\n{tag}: $" in out
+    if name == "users_and_tokens":
+        assert "linear_surrogate was run by alice" in out
+        assert "vic deletes a result: refused (403)" in out
+        assert "no token: refused (401)" in out
+        assert "a wrong token: refused (401)" in out
+    else:
+        assert "succeeded" in out and "exported to" in out
+
+
+@pytest.mark.needs_highs
 def test_ro_study_on_disk():
     pytest.importorskip("flexparameterize")
     out = "\n" + script(EXAMPLES / "ro_study" / "store_on_disk.py")

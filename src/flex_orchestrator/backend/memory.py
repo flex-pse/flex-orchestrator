@@ -5,7 +5,9 @@ contract the way Acquirium does, so the contract tests pass on both.
 """
 
 import copy
+import functools
 import json
+import threading
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -27,6 +29,27 @@ from flex_orchestrator.backend.base import (
 from flex_orchestrator.errors import StorageError
 
 
+def _locked(cls: type) -> type:
+    """Run every public method under the store's lock.
+
+    The HTTP server's requests and its job worker share one store, each in its
+    own thread.
+    """
+
+    def wrap(fn: Any) -> Any:
+        @functools.wraps(fn)
+        def locked(self: Any, *args: Any, **kwargs: Any) -> Any:
+            with self._lock:
+                return fn(self, *args, **kwargs)
+
+        return locked
+
+    for name, member in list(vars(cls).items()):
+        if callable(member) and not name.startswith("_"):
+            setattr(cls, name, wrap(member))
+    return cls
+
+
 @dataclass
 class _Run:
     study: str
@@ -34,8 +57,9 @@ class _Run:
     records: dict[str, Record] = field(default_factory=dict)
 
 
+@_locked
 class MemoryBackend:
-    """Studies, variables and runs held in dicts.
+    """Studies, variables and runs held in dicts, safe to share between threads.
 
     Attributes:
         resolve_unit: Always ``None``: there is no unit vocabulary, so the
@@ -54,6 +78,7 @@ class MemoryBackend:
         """Create an empty store."""
         self._variables: dict[str, dict[str, Variable]] = {}
         self._runs: dict[str, _Run] = {}
+        self._lock = threading.RLock()
 
     def define_study(self, name: str) -> None:
         """Create the study if it doesn't exist."""

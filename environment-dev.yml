@@ -37,4 +37,4 @@ dependencies:
       # orchestrator server stack (FastAPI/uvicorn already come with acquirium)
       - httpx
       # parallel execution (D13) uses ray, which already comes with acquirium
-      - -e .[dev]   # add the server extra in M7
+      - -e .[dev,server]   # the server extra (M7) too
