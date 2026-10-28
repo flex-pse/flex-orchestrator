@@ -40,14 +40,19 @@ def test_login_checks_the_token_against_the_server(tmp_path, monkeypatch, capsys
 def test_serve_builds_the_app_from_the_environment(tmp_path, monkeypatch, capsys):
     served = {}
     monkeypatch.setattr(
-        "uvicorn.run", lambda app, host, port: served.update(app=app, port=port)
+        "uvicorn.run",
+        lambda app, host, port, root_path: served.update(
+            app=app, port=port, root_path=root_path
+        ),
     )
     monkeypatch.setenv("FLEXORCH_TENANT", "lab")
     monkeypatch.setenv("FLEXORCH_API_TOKENS", f"alice:owner:{hash_token('t')}")
+    monkeypatch.setenv("FLEXORCH_ROOT_PATH", "/lab")
     monkeypatch.delenv("FLEXORCH_PLUGINS", raising=False)
     assert main(["--files", str(tmp_path / "store"), "serve", "--port", "9999"]) == 0
     app = served["app"]
     assert served["port"] == 9999
+    assert served["root_path"] == "/lab"  # behind the gateway, uvicorn's
     assert app.state.settings.tenant == "lab"
     assert type(app.state.orchestrator.backend).__name__ == "FileBackend"
     monkeypatch.delenv("FLEXORCH_TENANT")

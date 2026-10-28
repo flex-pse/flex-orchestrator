@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- `deprovision_tenant.sh` left the tenant's API container running.
 - The flex-pse spec validators dump with `by_alias=True`, so a `$source`
   reference is stored as `{"$source": ...}`, not `{"source": ...}`.
 - A study run in-process (`max_workers: 1`) whose config names registered
@@ -44,6 +45,25 @@
 - A root `README.md`.
 
 ### Added
+- Multi-tenant integration (PLAN.md M8): a Traefik gateway (`deploy/gateway`)
+  serving each tenant at `https://<host>/<tenant>/` over TLS, with no Docker
+  socket; `flex-orch openapi` and the published `docs/schemas/openapi.json`
+  (bearer token declared, operations named after their routes); job progress
+  as Server-Sent Events (`/jobs/{id}/events`); CORS (`FLEXORCH_CORS_ORIGINS`);
+  idle tenants (`provision_tenant.sh --idle-minutes N`, `FLEXORCH_IDLE_MINUTES`,
+  `start_tenant.sh`, `stop_tenant.sh`, `idle_tenants.sh`); backups that can be
+  off (`FLEXORCH_BACKUPS=off`, `--tenant-backups off`); and the gateway test
+  suite (`tests/test_gateway.py`), with a generated client.
+- `examples/server_examples/docker_tenants.py`: sets up the cluster, the
+  gateway and two tenants in Docker from Python, then runs the surrogate sweep
+  through them as three users. `Orchestrator(url=..., cafile=...)` trusts a
+  gateway's own CA.
+- A long-lived local Acquirium: `flex-orch [--data-dir D] acquirium start |
+  status | stop` (`flex_orchestrator.service`) runs `acquirium server`
+  detached on loopback, optionally with your own `acquirium.toml` (its
+  drivers), so it outlives every script. While it runs, `Orchestrator(data_dir=)`
+  attaches to it and never stops it. `FLEXORCH_START_ACQUIRIUM=0` makes the
+  orchestrator fail rather than start a short-lived managed server.
 - Local mode for the HTTP API (`flex-orch serve --local`, `Settings.local()`):
   no tokens, every request is the local user as owner, loopback only (it
   refuses other clients, `Host`s and browser `Origin`s). The client needs no

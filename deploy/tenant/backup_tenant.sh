@@ -14,8 +14,14 @@
 #   manifest.json    the tenant, the time and the WAL position
 #
 # The cluster's pgBackRest backups and WAL archive (point-in-time recovery)
-# are separate: backup_cluster.sh.
+# are separate: backup_cluster.sh. With the cluster's backups off, or the
+# tenant's (provision_tenant.sh --tenant-backups off), it does nothing and
+# prints no id.
 source "$(dirname "$0")/lib.sh"
+if ! tenant_backups_on "${1:?usage: backup_tenant.sh <tenant>}"; then
+    log "backups are off for $1 (or this cluster); it isn't backed up"
+    exit 0
+fi
 cluster_ready
 
 tenant="${1:?usage: backup_tenant.sh <tenant>}"

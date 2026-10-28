@@ -41,6 +41,7 @@ source_modules =
     flex_orchestrator.verify
     flex_orchestrator.client
     flex_orchestrator.connection
+    flex_orchestrator.service
     flex_orchestrator.hooks
     flex_orchestrator.specs
     flex_orchestrator.errors
@@ -105,6 +106,7 @@ source_modules =
     flex_orchestrator.parallel
     flex_orchestrator.verify
     flex_orchestrator.client
+    flex_orchestrator.service
 forbidden_modules =
     acquirium
     requests

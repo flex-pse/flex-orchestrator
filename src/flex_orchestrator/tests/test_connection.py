@@ -402,6 +402,7 @@ def test_the_orchestrator_connects_without_a_backend(monkeypatch):
         "db": DB,
         "acquirium_url": None,
         "db_credentials": None,
+        "environ": None,
     }
 
 

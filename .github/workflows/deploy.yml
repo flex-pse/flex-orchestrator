@@ -1,8 +1,9 @@
 name: Deploy
 
-# The tenant stacks (PLAN.md D14, M6), on a real Docker host: build the image,
-# start the cluster, and run tests/test_deploy.py (the isolation suite, a study
-# in mode 3, and the restore drill). Slower than CI, so it runs when the
+# The tenant stacks (PLAN.md D14, M6, M8), on a real Docker host: build the
+# image, start the cluster, and run tests/test_deploy.py (the isolation suite,
+# a study in mode 3, and the restore drill) and tests/test_gateway.py (tenants
+# behind the gateway, a generated client, idle tenants, backups off). Slower than CI, so it runs when the
 # deployment changes, weekly, and by hand; it isn't part of the CI workflow.
 
 on:
@@ -18,6 +19,8 @@ on:
       - "src/flex_orchestrator/client.py"
       - "src/flex_orchestrator/server/**"
       - "src/flex_orchestrator/tests/test_deploy.py"
+      - "src/flex_orchestrator/tests/test_gateway.py"
+      - "docs/schemas/openapi.json"
       - ".github/workflows/deploy.yml"
   push:
     branches: [main]
@@ -56,13 +59,17 @@ jobs:
 
       # The tests drive bash and docker; collecting them imports the package,
       # so it's installed with its core dependencies only (no Acquirium,
-      # flex-pse or solvers: those are in the image).
+      # flex-pse or solvers: those are in the image). The gateway tests call
+      # it over HTTPS (httpx) and generate a client (openapi-python-client).
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e . pytest pytest-timeout
+      - run: pip install -e . pytest pytest-timeout httpx openapi-python-client
 
-      - run: pytest -p no:cacheprovider -v src/flex_orchestrator/tests/test_deploy.py
+      - run: >-
+          pytest -p no:cacheprovider -v
+          src/flex_orchestrator/tests/test_deploy.py
+          src/flex_orchestrator/tests/test_gateway.py
 
       - name: Collect container logs
         if: failure()

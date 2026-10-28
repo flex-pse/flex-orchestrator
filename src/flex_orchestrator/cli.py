@@ -12,6 +12,9 @@
     flex-orch [CONNECTION] verify [--study S ...] [--samples N] [--against FILE]
     flex-orch [CONNECTION] serve [--local] [--host H] [--port P]  (needs [server])
     flex-orch login [--url URL]                  (the token comes on stdin)
+    flex-orch [--data-dir D] acquirium start [--config TOML] [--port P]
+    flex-orch [--data-dir D] acquirium status | stop
+    flex-orch openapi [--output FILE]            (needs [server])
 
 ``CONNECTION`` picks the store as ``Orchestrator()`` does (D11):
 ``--data-dir`` (local, the default ``.flexorch``), ``--db`` with
@@ -31,9 +34,14 @@ its result as JSON. ``verify`` exits 1 when the store has a problem or, with
 the ``FLEXORCH_*`` environment (:class:`~flex_orchestrator.server.Settings`).
 With ``--local`` it takes no tokens: every request is you, as owner, and it
 serves this machine only (loopback hosts).
+``acquirium start`` runs a long-lived Acquirium on the data dir (or your own
+``acquirium.toml`` with its drivers), which outlives every script; while it
+runs, everything that opens that data dir attaches to it
+(:mod:`flex_orchestrator.service`). ``status`` and ``stop`` find it there.
 ``login`` saves a token for ``Orchestrator(url=...)``: read from stdin, or
 asked for without echo, never from the command line; with ``--url`` it is
-checked first.
+checked first. ``openapi`` prints (or writes) the core routes' OpenAPI schema,
+which a UI's client is generated from.
 """
 
 import argparse
@@ -61,6 +69,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _login(args)
     if args.action == "serve":
         return _serve(args)
+    if args.action == "acquirium":
+        return _acquirium(args)
+    if args.action == "openapi":
+        return _openapi(args)
     try:
         with _orchestrator(args) as orch:
             result = _run(orch, args, rest)
@@ -145,6 +157,16 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default="127.0.0.1", help="bind host")
     serve.add_argument("--port", type=int, default=8080, help="bind port")
 
+    service = actions.add_parser(
+        "acquirium", help="a long-lived local Acquirium: start, status or stop"
+    )
+    service.add_argument("service_action", choices=["start", "status", "stop"])
+    service.add_argument("--config", help="your acquirium.toml (start only)")
+    service.add_argument("--port", type=int, help="its port (start; free if unset)")
+
+    openapi = actions.add_parser("openapi", help="the core routes' OpenAPI schema")
+    openapi.add_argument("--output", help="write it here instead of printing it")
+
     login = actions.add_parser(
         "login", help="save a token for Orchestrator(url=...); it comes on stdin"
     )
@@ -191,7 +213,57 @@ def _serve(args: argparse.Namespace) -> int:
         plugins=tuple(args.plugin),
         orchestrator={**settings.orchestrator, **store},
     )
-    uvicorn.run(create_app(settings), host=args.host, port=args.port)
+    uvicorn.run(
+        create_app(settings),
+        host=args.host,
+        port=args.port,
+        root_path=settings.root_path,  # FLEXORCH_ROOT_PATH, behind a gateway
+    )
+    return 0
+
+
+def _openapi(args: argparse.Namespace) -> int:
+    try:
+        from flex_orchestrator.server.openapi import core_schema, dumps
+    except ImportError as exc:
+        print(
+            f"flex-orch: openapi needs flex-orchestrator[server] ({exc})",
+            file=sys.stderr,
+        )
+        return 1
+    text = dumps(core_schema())
+    if args.output:
+        with open(args.output, "w", encoding="utf-8", newline="\n") as file:
+            file.write(text)
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
+def _acquirium(args: argparse.Namespace) -> int:
+    import dataclasses as dc
+
+    from flex_orchestrator import service
+
+    if args.db or args.acquirium_url or args.files:
+        print(
+            "flex-orch: acquirium takes --data-dir (or --config) only", file=sys.stderr
+        )
+        return 1
+    try:
+        if args.service_action == "start":
+            found = dc.asdict(
+                service.start(args.data_dir, config=args.config, port=args.port)
+            )
+        elif args.service_action == "stop":
+            stopped = service.stop(args.data_dir)
+            found = {"stopped": stopped is not None}
+        else:
+            found = service.status(args.data_dir)
+    except (FlexOrchestratorError, ValueError) as exc:
+        print(f"flex-orch: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(found, indent=2))
     return 0
 
 

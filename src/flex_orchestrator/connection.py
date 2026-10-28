@@ -11,6 +11,12 @@ from its arguments:
 3. **remote** (``acquirium_url=``): a running Acquirium, which owns its own
    database secret.
 
+A managed server lives as long as the first process that opened its
+``data_dir``. If a long-lived one is running there (``flex-orch acquirium
+start``, :mod:`flex_orchestrator.service`), modes 1 and 2 attach to it instead
+and never stop it. ``FLEXORCH_START_ACQUIRIUM=0`` makes them fail rather than
+start a managed one.
+
 Database credentials never come from script code. In mode 2 they're taken from
 ``FLEXORCH_DB_PASSWORD_FILE``, then ``FLEXORCH_DB_USER`` /
 ``FLEXORCH_DB_PASSWORD``, then libpq's own ``PGUSER`` / ``PGPASSWORD`` /
@@ -124,14 +130,17 @@ def connect(
         db_credentials: An explicit login for mode 2, for developers and tests.
         exact_only: Start the managed server without text-matching indexes.
         timeout: Seconds to wait for the server.
-        environ: Where the ``FLEXORCH_DB_*`` credentials are read from;
-            ``os.environ`` by default. libpq's own ``PG*`` variables and
-            ``~/.pgpass`` are always read from the process.
+        environ: Where the ``FLEXORCH_DB_*`` credentials and
+            ``FLEXORCH_START_ACQUIRIUM`` are read from; ``os.environ`` by
+            default. libpq's own ``PG*`` variables and ``~/.pgpass`` are always
+            read from the process.
 
     Raises:
         ValueError: For arguments that mix modes, or a password in ``db``.
         DBAuthError: If Postgres refuses the login.
-        StorageError: If a check before starting fails (see :func:`preflight`).
+        StorageError: If a check before starting fails (see :func:`preflight`),
+            or ``FLEXORCH_START_ACQUIRIUM=0`` and no long-lived server is
+            running for ``data_dir``.
 
     Example:
         >>> connect(acquirium_url="http://acquirium:8000")  # doctest: +SKIP
@@ -150,6 +159,9 @@ def connect(
         if db_credentials is not None:
             raise ValueError("db_credentials need db=, the Postgres to log in to.")
         root = Path(data_dir or DEFAULT_DATA_DIR).expanduser().resolve()
+        running = _long_lived(root, timeout, environ)
+        if running is not None:
+            return running
         if (root / CONFIG_NAME).exists():
             raise ValueError(
                 f"{root} belongs to a Postgres-backed Acquirium; pass the same "
@@ -165,6 +177,9 @@ def connect(
             "must persist next to the database."
         )
     root = Path(data_dir).expanduser().resolve()
+    running = _long_lived(root, timeout, environ)
+    if running is not None:
+        return running
     if any(root.glob("*.duckdb")):
         raise ValueError(
             f"{root} holds a local DuckDB Acquirium; use another data_dir for "
@@ -182,6 +197,36 @@ def connect(
             env["PGPASSWORD"] = password.get_secret_value()
         client = _with_env(env, _init_config, config, timeout, password)
     return Connection("postgres", target, client, owned=True)
+
+
+def _long_lived(
+    root: Path, timeout: float, environ: Mapping[str, str] | None
+) -> Connection | None:
+    """Attach to the long-lived server for ``root``, if one is running.
+
+    Raises:
+        StorageError: If none is, and ``FLEXORCH_START_ACQUIRIUM`` forbids
+            starting a managed one.
+    """
+    from flex_orchestrator.service import find
+
+    service = find(root)
+    if service is None:
+        env = os.environ if environ is None else environ
+        if env.get("FLEXORCH_START_ACQUIRIUM", "1").strip().lower() in _NO:
+            raise StorageError(
+                f"No Acquirium is running for {root}, and FLEXORCH_START_ACQUIRIUM "
+                "forbids starting one: run `flex-orch --data-dir "
+                f"{root} acquirium start` first."
+            )
+        return None
+    import acquirium as aq
+
+    client = aq.init(address=service.url, timeout=timeout)
+    return Connection("local", str(root), client)
+
+
+_NO = ("0", "false", "no", "off")
 
 
 def credentials_from_env(environ: Mapping[str, str] | None = None) -> DBCredentials:

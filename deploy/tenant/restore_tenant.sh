@@ -14,7 +14,9 @@
 # Run `flex-orch verify --against <earlier report>` in the new stack after.
 #
 # The source tenant needn't exist any more; the new one mustn't exist yet.
+# With the cluster's backups off there's nothing to restore from.
 source "$(dirname "$0")/lib.sh"
+backups_on || die "backups are off for this cluster (init_cluster.sh); there's nothing to restore"
 cluster_ready
 
 usage="usage: restore_tenant.sh <tenant> <time | backup id> --into <new tenant>"

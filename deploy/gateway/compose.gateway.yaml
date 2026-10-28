@@ -1,0 +1,66 @@
+# The gateway in front of every tenant's API (PLAN.md D15, M8). Started by
+# init_gateway.sh:
+#
+#   https://<host>/<tenant>/...  ->  that tenant's api container
+#
+# Traefik, as uid 1000 on a read-only root, with no Docker socket: its routes
+# are files in $FLEXORCH_SECRETS/settings/gateway (common.yml for TLS and
+# headers, and a tenant_<t>.yml per tenant from provision_tenant.sh), which it
+# watches. It's on its own network, where its ports are published, and on each
+# tenant's edge network (flexorch_<tenant>_edge), which only that tenant's API
+# is also on; it can't reach any Acquirium or the database. The orchestrator
+# still checks every token itself: the gateway is TLS and routing, not
+# authentication.
+#
+# Its static configuration is these flags (Traefik takes a file or flags, not
+# both, and only flags can name the published port): HTTPS on :8443, plain
+# HTTP on :8080 redirecting to it, a health check on :8082.
+
+name: flexorch-gateway
+
+services:
+  gateway:
+    image: ${GATEWAY_IMAGE:-traefik:v3.4.1}
+    container_name: flexorch-gateway
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - --entryPoints.websecure.address=:8443
+      - --entryPoints.websecure.http.tls=true
+      # Study imports are up to 2 GB, and a progress stream stays open for a
+      # whole job: no read or write deadline, but idle connections close.
+      - --entryPoints.websecure.transport.respondingTimeouts.readTimeout=0s
+      - --entryPoints.websecure.transport.respondingTimeouts.writeTimeout=0s
+      - --entryPoints.websecure.transport.respondingTimeouts.idleTimeout=180s
+      - --entryPoints.web.address=:8080
+      - --entryPoints.web.http.redirections.entryPoint.to=:${FLEXORCH_GATEWAY_HTTPS_PORT:-443}
+      - --entryPoints.web.http.redirections.entryPoint.scheme=https
+      - --entryPoints.traefik.address=:8082 # the health check's
+      - --ping=true
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+      - --api.dashboard=false
+      - --log.level=INFO
+      - --accessLog=true
+      - --global.checkNewVersion=false
+      - --global.sendAnonymousUsage=false
+    ports:
+      - "${FLEXORCH_GATEWAY_HTTPS_PORT:-443}:8443"
+      - "${FLEXORCH_GATEWAY_HTTP_PORT:-80}:8080"
+    volumes:
+      - ${FLEXORCH_SECRETS:?set FLEXORCH_SECRETS}/settings/gateway:/etc/traefik/dynamic:ro
+      - ${FLEXORCH_SECRETS}/gateway/tls.crt:/etc/flexorch/gateway.crt:ro
+      - ${FLEXORCH_SECRETS}/gateway/tls.key:/etc/flexorch/gateway.key:ro
+    networks: [public]
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping", "--entryPoints.traefik.address=:8082"]
+      interval: 5s
+      retries: 30
+    restart: unless-stopped
+
+networks:
+  public:
+    name: flexorch_gateway

@@ -14,13 +14,17 @@
 #   FLEXORCH_ACQUIRIUM_URL points Orchestrator() and flex-orch at the
 #   tenant's Acquirium (mode 3); the orchestrator holds no credentials.
 # - api: the tenant's HTTP API (Phase 2, `flex-orch serve`), started with
-#   `--profile api`. It takes tokens from api_token.sh (FLEXORCH_API_TOKENS_FILE)
-#   or an identity provider (FLEXORCH_OIDC_ISSUER / _AUDIENCE), and publishes no
-#   port: clients reach it on the tenant network (the gateway, M8).
+#   `--profile api` (start_tenant.sh). It takes tokens from api_token.sh
+#   (FLEXORCH_API_TOKENS_FILE) or an identity provider (FLEXORCH_OIDC_ISSUER /
+#   _AUDIENCE), and publishes no port: the gateway (deploy/gateway) reaches it
+#   on the tenant's edge network as api-<tenant>, at https://<host>/<tenant>/.
+#   With FLEXORCH_IDLE_MINUTES (settings/tenant_<t>.env) it stops itself when idle, and
+#   isn't restarted for that (lib.sh's tenant_compose sets the restart policy).
 #
 # Every container runs as uid 1000 on a read-only root filesystem, with no
 # Docker socket. The tenant network is internal: no route out, none between
-# tenants. Only acquirium is on the tenant's database network.
+# tenants. Only acquirium is on the tenant's database network, and only api on
+# its edge network.
 
 name: flexorch-${TENANT:?set TENANT}
 
@@ -85,11 +89,17 @@ services:
       FLEXORCH_OIDC_ISSUER: ${FLEXORCH_OIDC_ISSUER:-}
       FLEXORCH_OIDC_AUDIENCE: ${FLEXORCH_OIDC_AUDIENCE:-}
       FLEXORCH_PLUGINS: ${FLEXORCH_PLUGINS:-}
+      FLEXORCH_CORS_ORIGINS: ${FLEXORCH_CORS_ORIGINS:-}
+      FLEXORCH_IDLE_MINUTES: ${FLEXORCH_IDLE_MINUTES:-}
+      FLEXORCH_ROOT_PATH: /${TENANT}
     volumes:
       # Token hashes, not tokens: provision_tenant.sh creates it, api_token.sh adds.
       - ${FLEXORCH_SECRETS}/tenants/${TENANT}/api_tokens:/etc/flexorch/api_tokens:ro
       - scratch:/work
-    networks: [tenant]
+    networks:
+      tenant: {}
+      edge:
+        aliases: ["api-${TENANT}"] # unique on the gateway, which joins every edge
     depends_on:
       acquirium:
         condition: service_healthy
@@ -102,7 +112,7 @@ services:
       interval: 5s
       timeout: 10s
       retries: 60
-    restart: unless-stopped
+    restart: ${FLEXORCH_API_RESTART:-unless-stopped}
 
 secrets:
   pgpass:
@@ -121,4 +131,8 @@ networks:
   db:
     # Created by provision_tenant.sh and joined by the cluster's Postgres.
     name: flexorch_${TENANT}_db
+    external: true
+  edge:
+    # Created by provision_tenant.sh and joined by the gateway.
+    name: flexorch_${TENANT}_edge
     external: true

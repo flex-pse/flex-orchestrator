@@ -1,0 +1,22 @@
+# The gateway's shared dynamic configuration (PLAN.md M8); init_gateway.sh
+# copies it next to the tenants' routes, where Traefik reads it.
+
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /etc/flexorch/gateway.crt
+        keyFile: /etc/flexorch/gateway.key
+  options:
+    default:
+      minVersion: VersionTLS12
+
+http:
+  middlewares:
+    # On every tenant's route (lib.sh's gateway_route).
+    secure-headers:
+      headers:
+        stsSeconds: 31536000
+        contentTypeNosniff: true
+        frameDeny: true
+        referrerPolicy: no-referrer

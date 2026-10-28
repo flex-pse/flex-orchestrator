@@ -198,6 +198,11 @@ class Jobs:
             "error": error.get("message"),
         }
 
+    def busy(self) -> bool:
+        """Whether a job is queued or running in this process."""
+        with self._lock:
+            return any(j.status in ("queued", "running") for j in self._jobs.values())
+
     def cancel(self, job_id: str) -> dict[str, Any]:
         """Cancel a queued or running job; a finished one is left as it is.
 

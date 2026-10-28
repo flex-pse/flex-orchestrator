@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Set up the shared cluster once, then start it (PLAN.md D14, M6).
 #
-#   ./init_cluster.sh
+#   ./init_cluster.sh                       # backups on (or as last recorded)
+#   FLEXORCH_BACKUPS=off ./init_cluster.sh  # no backups: no SeaweedFS, no WAL archive
 #
 # The first run writes the cluster's secrets to $FLEXORCH_SECRETS/cluster:
 # the Postgres admin password, the S3 keys, the backup passphrase (pgBackRest
@@ -9,7 +10,18 @@
 # CA with the S3 server's TLS certificate. Then, every run: start the cluster,
 # create the bucket and the pgBackRest stanza if they're missing, and take a
 # full backup if there's none. Safe to run again.
+#
+# FLEXORCH_BACKUPS is recorded in $FLEXORCH_SECRETS/settings/cluster.env, so
+# every script follows it. Run this again with the other value to switch:
+# Postgres restarts with WAL archiving on or off. With backups off, the backup
+# scripts do nothing and say so, restore_tenant.sh refuses, and
+# deprovision_tenant.sh takes no final backup.
 source "$(dirname "$0")/lib.sh"
+
+backups=on
+backups_on || backups=off
+mkdir -p "$SETTINGS_DIR"
+printf 'FLEXORCH_BACKUPS=%s\n' "$backups" >"$CLUSTER_SETTINGS"
 
 dir="$FLEXORCH_SECRETS/cluster"
 if [[ ! -f "$dir/pgbackrest.conf" ]]; then
@@ -69,8 +81,12 @@ EOF
         chmod 644 ca.crt'
 fi
 
-log "starting the cluster"
+log "starting the cluster (backups $backups)"
 cluster_ready
+if [[ "$backups" == off ]]; then
+    log "cluster ready; backups are off (FLEXORCH_BACKUPS=on ./init_cluster.sh to turn them on)"
+    exit 0
+fi
 
 if ! s3 s3api head-bucket --bucket "$BUCKET" >/dev/null 2>&1; then
     log "creating bucket $BUCKET"

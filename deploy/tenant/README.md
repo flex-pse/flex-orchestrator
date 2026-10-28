@@ -6,22 +6,27 @@ networks and containers; nothing is shared between tenants but the cluster,
 which each tenant reaches only as its own role.
 
 ```
-              ┌──────────── flexorch_<tenant> (internal) ────────────┐
-              │ orchestrator (run on demand) ──► acquirium :8000      │
+ gateway (Traefik, HTTPS) ──flexorch_<tenant>_edge──► api ─┐
+              ┌──────────── flexorch_<tenant> (internal) ──┼─────────┐
+              │ orchestrator (run on demand) ──► acquirium :8000 ◄───┘
               └───────────────────────────────────────┬──────────────┘
                                    flexorch_<tenant>_db │ (internal)
    flexorch_cluster (internal):  postgres (TimescaleDB, pgBackRest) ──► seaweedfs (S3, TLS)
 ```
+
+The gateway is in [`deploy/gateway`](../gateway/README.md).
 
 ## What's here
 
 | File | What it does |
 | --- | --- |
 | `compose.cluster.yaml` | Postgres 17 + TimescaleDB with WAL archiving, and SeaweedFS as the S3 store backups go to |
-| `compose.tenant.yaml` | one tenant's stack: its Acquirium, and the orchestrator container scripts run in |
+| `compose.tenant.yaml` | one tenant's stack: its Acquirium, its API, and the orchestrator container scripts run in |
 | `pg_hba.conf` | a role may log in only to the database of its own name; the admin only over the socket |
-| `init_cluster.sh` | first run: secrets, CA and TLS certificate, bucket, pgBackRest stanza, first full backup |
-| `provision_tenant.sh <t>` | role, database, password, database network; then starts the stack |
+| `init_cluster.sh` | first run: secrets, CA and TLS certificate, bucket, pgBackRest stanza, first full backup; `FLEXORCH_BACKUPS=off` for none |
+| `provision_tenant.sh <t> [options]` | role, database, password, networks, gateway route, settings; then starts its Acquirium |
+| `start_tenant.sh <t>` / `stop_tenant.sh <t>` | start (and wait for) or stop a tenant's Acquirium and API; its data is kept |
+| `idle_tenants.sh` | from cron: stops the Acquirium of each tenant whose API timed out |
 | `deprovision_tenant.sh <t>` | a final backup, then removes the stack, volumes, networks, database, role and secret |
 | `backup_tenant.sh <t>` | a consistent dump and volume copy (and a graph export), encrypted to S3 |
 | `backup_cluster.sh [full\|diff\|incr]` | the nightly pgBackRest backup, then every tenant's |
@@ -50,8 +55,47 @@ Settings, all optional:
   It must be on a filesystem with real permissions (not `/mnt/c` on WSL):
   libpq ignores a password file that others can read.
 - `FLEXORCH_IMAGE`: the image, `flexorch:dev` by default.
+- `FLEXORCH_BACKUPS`: `on` (the default) or `off`, recorded by
+  `init_cluster.sh` (see [Backups off](#backups-off)).
 - `FLEXORCH_BACKUP_BUCKET`, `PG_IMAGE`, `S3_IMAGE`, `AWS_CLI_IMAGE`,
   `DOCKER_COMPOSE`.
+
+Settings that aren't secret (the cluster's backup switch, each tenant's
+options, the gateway's routes) are in `$FLEXORCH_SECRETS/settings`.
+
+## Operating it
+
+**Add a tenant**, reachable at `https://<host>/<tenant>/`:
+
+```bash
+./provision_tenant.sh tenant_a                     # persistent
+./provision_tenant.sh tenant_b --idle-minutes 30   # stops after 30 idle minutes
+./start_tenant.sh tenant_a                         # its Acquirium and API
+```
+
+`provision_tenant.sh` options (run it again to change them):
+- `--idle-minutes N`: 0 (the default) keeps the tenant running until it's
+  stopped; N stops its API after N minutes with no requests and no job, and
+  `idle_tenants.sh` then stops its Acquirium (and its drivers). The control
+  plane runs `start_tenant.sh` when one of its users logs in.
+- `--tenant-backups off`: the tenant isn't backed up.
+- `--cors-origins https://ui.example.org`: the browser origins its API serves,
+  for a UI on another origin than the gateway.
+
+**Add a user**: with static tokens,
+`./api_token.sh tenant_a alice editor` prints alice's token once (viewer,
+editor or owner); give it to her, and she runs `flex-orch login`. To revoke it,
+delete its line from `$FLEXORCH_SECRETS/tenants/tenant_a/api_tokens` and
+restart the API (`./stop_tenant.sh tenant_a && ./start_tenant.sh tenant_a`).
+With an identity provider, users and passwords are its own: give the user the
+`tenant` and `role` claims there.
+
+**Back up**: schedule `./backup_cluster.sh` nightly (cron or a systemd timer);
+`./backup_tenant.sh tenant_a` backs one tenant up now. Restore with
+`./restore_tenant.sh` ([Backups and restore](#backups-and-restore)).
+
+**Remove a tenant**: `./deprovision_tenant.sh tenant_a` (a final backup first,
+if it's backed up).
 
 ## Run a study in a tenant's stack
 
@@ -70,18 +114,18 @@ Its `/work` is the tenant's scratch volume; everything else is read-only.
 
 ## The HTTP API
 
-A tenant's API (`flex-orch serve`, PLAN.md M7) is the `api` service, started
-on demand:
+A tenant's API (`flex-orch serve`, PLAN.md M7) is the `api` service, which
+`start_tenant.sh` starts:
 
 ```bash
 ./api_token.sh tenant_a alice editor            # prints the token once
-TENANT=tenant_a docker compose -f compose.tenant.yaml -p flexorch-tenant_a \
-    --profile api up -d --wait api
+./start_tenant.sh tenant_a
 ```
 
-It's on the tenant's network only (no published port; a gateway comes in
-M8), so clients there use `Orchestrator(url="http://api:8080", token=...)`.
-Tokens are viewer, editor or owner. `api_token.sh` keeps only each token's
+It publishes no port. The gateway reaches it on the tenant's edge network and
+serves it at `https://<host>/tenant_a/` (`Orchestrator(url=
+"https://<host>/tenant_a", token=...)`; its docs at `/tenant_a/docs`).
+Inside the stack, it's `http://api:8080`. Tokens are viewer, editor or owner. `api_token.sh` keeps only each token's
 SHA-256, in `$FLEXORCH_SECRETS/tenants/<t>/api_tokens`; delete a line and
 restart `api` to revoke one. With an identity provider instead, set
 `FLEXORCH_OIDC_ISSUER` and `FLEXORCH_OIDC_AUDIENCE`: JWTs must carry the
@@ -119,6 +163,22 @@ Schedule `backup_cluster.sh` nightly (cron or a systemd timer), and rehearse a
 restore every quarter (PLAN.md §9). The restore drill in
 `src/flex_orchestrator/tests/test_deploy.py` is that rehearsal.
 
+### Backups off
+
+For a cluster that needs none (a test host, or data kept elsewhere):
+
+```bash
+FLEXORCH_BACKUPS=off ./init_cluster.sh
+```
+
+It's recorded in `$FLEXORCH_SECRETS/settings/cluster.env`, and every script
+follows it: there's no SeaweedFS and no WAL archiving, `backup_cluster.sh` and
+`backup_tenant.sh` do nothing and say so, `restore_tenant.sh` refuses, and
+`deprovision_tenant.sh` takes no final backup. `FLEXORCH_BACKUPS=on
+./init_cluster.sh` turns them on again (Postgres restarts with archiving, and
+takes its first full backup); there's nothing to restore from before that.
+One tenant opts out with `provision_tenant.sh <t> --tenant-backups off`.
+
 ## Tests
 
 ```bash
@@ -129,6 +189,14 @@ On Windows, with Docker in WSL: `FLEXORCH_TEST_DEPLOY="wsl.exe -d Ubuntu --"`.
 They provision two fresh tenants on the cluster and check isolation (database,
 network, volume, secret, hardening), run the smoke study in mode 3, and run the
 restore drill; the tenants are removed afterwards.
+
+`test_gateway.py` (the same setting) restarts the gateway on ports 18443 and
+18080 and puts four tenants behind it: each answers only its own tokens, the
+gateway reaches no Acquirium, only TLS 1.2 or later, CORS for the tenant with
+a UI origin, a client generated from `docs/schemas/openapi.json` (with
+`openapi-python-client`) runs the smoke study and the RO surrogate sweep and
+follows them by their progress streams, an idle tenant stops and starts again,
+and backups that are off do nothing.
 
 ## For production
 

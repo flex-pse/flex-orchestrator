@@ -8,10 +8,13 @@ result. ``execute_study`` and ``fit_surrogate`` also have study routes that
 go the same way.
 """
 
+import asyncio
+import json
+from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from flex_orchestrator.ext.commands import to_json
 from flex_orchestrator.server.auth import Principal
@@ -106,6 +109,48 @@ def fit_surrogate(
 def get_job(job_id: str, jobs: Any = Depends(get_jobs)) -> dict:
     """A job's status, progress, result or error; 404 if there's none."""
     return jobs.get(job_id)
+
+
+FINISHED = ("succeeded", "failed", "cancelled", "interrupted")
+
+
+@router.get(
+    "/jobs/{job_id}/events",
+    dependencies=[Depends(require_role("viewer"))],
+    response_class=StreamingResponse,
+    responses={200: {"content": {"text/event-stream": {}}}},
+)
+async def job_events(
+    job_id: str, request: Request, jobs: Any = Depends(get_jobs)
+) -> StreamingResponse:
+    """A job's progress as Server-Sent Events, until it finishes.
+
+    Each change of the job is an ``event: progress`` whose data is the job, as
+    ``GET /jobs/{id}`` returns it; the last is ``event: done``. Browsers'
+    ``EventSource`` can't send a bearer token, so read it with ``fetch`` (a
+    streamed response).
+    """
+    first = jobs.get(job_id)  # 404 before the stream starts
+
+    async def stream() -> AsyncIterator[str]:
+        view, sent = first, None
+        while True:
+            if view != sent:
+                event = "done" if view["status"] in FINISHED else "progress"
+                yield f"event: {event}\ndata: {json.dumps(to_json(view))}\n\n"
+                sent = view
+                if event == "done":
+                    return
+            if await request.is_disconnected():
+                return
+            await asyncio.sleep(0.5)
+            view = jobs.get(job_id)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.delete("/jobs/{job_id}", dependencies=[Depends(require_role("editor"))])

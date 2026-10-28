@@ -27,6 +27,7 @@ import base64
 import io
 import json
 import os
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -109,6 +110,8 @@ class RemoteOrchestrator:
         study: A study to select.
         frame: ``polars`` or ``pandas``, for :meth:`get_data`.
         timeout: Seconds per request.
+        cafile: A CA certificate to trust for ``https://`` URLs besides the
+            system's, e.g. a gateway's own CA on an air-gapped site.
         transport: How requests are sent (tests pass an in-process one).
         environ: Where ``FLEXORCH_TOKEN`` is read.
     """
@@ -121,6 +124,7 @@ class RemoteOrchestrator:
         study: str | None = None,
         frame: str = "polars",
         timeout: float = 60.0,
+        cafile: str | os.PathLike[str] | None = None,
         transport: Transport | None = None,
         environ: Mapping[str, str] | None = None,
     ) -> None:
@@ -129,6 +133,10 @@ class RemoteOrchestrator:
         self._token = token or read_token(environ)
         self.frame = frame
         self.timeout = timeout
+        self._tls = None
+        if cafile is not None:
+            self._tls = ssl.create_default_context()
+            self._tls.load_verify_locations(cafile=os.fspath(cafile))
         self._transport = transport or self._urllib
         self._study: str | None = None
         if study is not None:
@@ -529,7 +537,7 @@ class RemoteOrchestrator:
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
             with urllib.request.urlopen(
-                request, timeout=self.timeout
+                request, timeout=self.timeout, context=self._tls
             ) as response:  # noqa: S310
                 return response.status, response.read()
         except urllib.error.HTTPError as exc:

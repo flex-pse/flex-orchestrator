@@ -325,8 +325,9 @@ class Orchestrator:
             ``FLEXORCH_PLUGINS`` load too. Use
             :func:`~flex_orchestrator.ext.create_orchestrator` to get a
             plugin's orchestrator subclass.
-        environ: Where ``FLEXORCH_PLUGINS``, ``FLEXORCH_RAY_ADDRESS`` and
-            ``FLEXORCH_ACQUIRIUM_URL`` are read; ``os.environ`` by default.
+        environ: Where ``FLEXORCH_PLUGINS``, ``FLEXORCH_RAY_ADDRESS``,
+            ``FLEXORCH_ACQUIRIUM_URL`` and ``FLEXORCH_START_ACQUIRIUM`` are
+            read; ``os.environ`` by default.
         ray_address: The Ray cluster for studies with ``max_workers > 1``
             when their config names none (D13); ``FLEXORCH_RAY_ADDRESS`` if
             unset, else local Ray.
@@ -349,7 +350,7 @@ class Orchestrator:
             return super().__new__(cls)
         from flex_orchestrator.client import RemoteOrchestrator
 
-        allowed = {"token", "study", "frame", "environ"}
+        allowed = {"token", "study", "frame", "environ", "cafile", "timeout"}
         extra = sorted(set(kwargs) - allowed) + (["backend"] if args else [])
         if extra:
             raise ValueError(
@@ -398,6 +399,7 @@ class Orchestrator:
                 db=db,
                 acquirium_url=acquirium_url,
                 db_credentials=db_credentials,
+                environ=environ,
             )
             backend = self.connection.backend()
         elif any(a is not None for a in (data_dir, db, acquirium_url, db_credentials)):

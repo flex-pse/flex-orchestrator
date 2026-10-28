@@ -560,6 +560,24 @@ orch = Orchestrator(acquirium_url="http://acquirium:8000")
 - **Never `recreate`.** The orchestrator never sets it, and rejects configs that do.
 - **Mode 3** needs no database credentials at all. In Phase 1 the network around the tenant stack is what protects
   Acquirium (D14). Phase 2 adds token auth at the orchestrator (D15).
+- **A long-lived local Acquirium** (decided 2026-10-27). A managed server (modes 1 and 2) lives only as long as the
+  first process that opened its `data_dir`, and stops when that process does, even with others attached. An
+  Acquirium that runs its own drivers and data processing has to outlive every script, as the tenant stack's
+  `acquirium` service does:
+  - `flex-orch [--data-dir D] acquirium start [--config acquirium.toml] [--port P]` runs `acquirium server`
+    detached, on loopback only (Acquirium has no login of its own), and records `{url, pid}` in the `data_dir`
+    (`flexorch-service.json`). Without `--config` it writes one with the managed server's settings (DuckDB, exact
+    matching), so a `data_dir` holds the same stores either way; with it, it serves your config, drivers and apps
+    included. `status` and `stop` find it there; `stop` keeps the data (`SIGTERM`, or the process ended on
+    Windows, as Acquirium's own runtime does).
+  - While it runs, modes 1 and 2 attach to it for that `data_dir` (it must answer `GET /health`, on loopback) and
+    never stop it.
+  - `FLEXORCH_START_ACQUIRIUM=0` makes modes 1 and 2 fail if it isn't running, instead of starting a short-lived
+    managed server on the same data.
+  - Only Acquirium's public interfaces are used (its `server` command, config file and `/health`), not its
+    private runtime registry. A plain `aq.init(data_dir=...)` outside the orchestrator doesn't see the service.
+  - For a local app: its launcher (or an OS service) owns the long-lived Acquirium, and `flex-orch serve --local`
+    attaches to it, the same layout as a tenant stack.
 
 **Built** in `flex_orchestrator.connection`; `Orchestrator(backend=None, *, data_dir, db, acquirium_url,
 db_credentials)` calls `connect()`, and `orch.connection` / `orch.close()` / `with Orchestrator(...)` manage it.
@@ -1797,6 +1815,36 @@ D21.
   - The full isolation suite, including the auth layer, passes against 3 tenants behind the gateway.
   - A UI-like client (a generated SDK test) runs scripts 3 and 4.
   - The docs cover how an operator adds a tenant, a user and a backup.
+- **Status: built** (decided 2026-10-27), apart from the identity provider (tokens are static or any JWKS issuer's):
+  - **Gateway: Traefik** (`deploy/gateway`), with its file provider: `provision_tenant.sh` writes each tenant's
+    route, so Traefik never has the Docker socket. Uid 1000, read-only root. TLS 1.2 or later and HSTS; HTTP only
+    redirects. `https://<host>/<tenant>/` goes to `api-<tenant>:8080` with the prefix stripped, and uvicorn puts it
+    back (`FLEXORCH_ROOT_PATH`), so `/docs` and the schema's `servers` are right. Each tenant has an internal edge
+    network that only its API and the gateway join; no Acquirium and no database is reachable from the gateway.
+    Certificates are your own, or a CA `init_gateway.sh` makes (air-gapped sites, tests); Let's Encrypt is
+    documented, not set up.
+  - **OpenAPI export:** `flex-orch openapi` writes the core routes' schema to `docs/schemas/openapi.json` (a test
+    fails when it's stale). It declares the bearer token, and each operation is named after its route function
+    (`store_spec`, `execute_study`; a plugin's are prefixed with its name), so a generated client reads well.
+    Generated clients aren't shipped: the UI generates its TypeScript client from the file, and the exit test
+    generates a Python one.
+  - **Progress:** `GET /jobs/{id}/events`, Server-Sent Events (`progress`, then `done`), viewer role. Browsers'
+    `EventSource` can't send a bearer token, so a UI reads it with `fetch`.
+  - **CORS:** `FLEXORCH_CORS_ORIGINS` (per tenant: `provision_tenant.sh --cors-origins`), no credentials, no
+    wildcard; local mode allows loopback origins. Not needed when the gateway serves the UI on its own origin.
+  - **Idle tenants, per tenant:** `provision_tenant.sh --idle-minutes N`. 0, the default, is persistent: it runs
+    until `stop_tenant.sh`. N: the API stops itself after N minutes with no request and no job
+    (`FLEXORCH_IDLE_MINUTES`; health checks don't count), and `idle_tenants.sh` (cron) then stops its Acquirium
+    and its drivers. `start_tenant.sh` starts both again, which the control plane runs at login.
+  - **Backups can be off:** `FLEXORCH_BACKUPS=off ./init_cluster.sh` (no SeaweedFS, no WAL archiving; the backup
+    scripts do nothing, `restore_tenant.sh` refuses), recorded in `$FLEXORCH_SECRETS/settings/cluster.env`; one
+    tenant opts out with `--tenant-backups off`.
+  - **Tests:** `server/tests/test_m8.py` (unit: CORS, SSE, the idle watch, the prefix, the schema).
+    `tests/test_gateway.py` (opt-in, with `test_deploy.py`): four tenants behind the gateway, each answering only
+    its own tokens, the gateway reaching no Acquirium, TLS, CORS, a client generated from the schema running the
+    smoke study (script 4) and the RO surrogate sweep (script 3) by their progress streams, an idle tenant
+    stopping and starting with its data, and backups that are off. The deploy workflow runs both.
+  - Also fixed: `deprovision_tenant.sh` left the API container running.
 
 #### Upstream track (runs alongside both phases)
 - ~~**U1 (flex-pse):** `emit_model(m)`~~ — done in flex-pse 0.2.

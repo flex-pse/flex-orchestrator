@@ -156,6 +156,8 @@ def test_tokens(client, tmp_path, monkeypatch):
 def test_orchestrator_with_a_url_is_the_client():
     orch = Orchestrator(url=URL, token="t", study=None)
     assert isinstance(orch, RemoteOrchestrator) and orch.url == URL
+    with pytest.raises(FileNotFoundError):  # a gateway's CA, checked up front
+        Orchestrator(url=URL, token="t", cafile="no-such-ca.crt")
     with pytest.raises(ValueError, match="takes only"):
         Orchestrator(url=URL, token="t", data_dir="x")
     with pytest.raises(ValueError, match="goes with url"):

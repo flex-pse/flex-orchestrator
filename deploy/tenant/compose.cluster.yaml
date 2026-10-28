@@ -6,6 +6,10 @@
 # - seaweedfs: an S3 server standing in for off-host object storage. pgBackRest
 #   and the tenant backups write to its bucket over TLS, as they would to S3.
 #
+# With backups off (FLEXORCH_BACKUPS=off ./init_cluster.sh), lib.sh's
+# cluster_compose leaves out the `backups` profile (no SeaweedFS) and sets
+# FLEXORCH_ARCHIVE_MODE=off (no WAL archiving).
+#
 # Started by init_cluster.sh, which writes the secrets this file mounts:
 #
 #   ./init_cluster.sh            # first time: secrets, start, bucket, first backup
@@ -33,7 +37,7 @@ services:
       - -c
       - wal_level=replica
       - -c
-      - archive_mode=on
+      - archive_mode=${FLEXORCH_ARCHIVE_MODE:-on}
       - -c
       - archive_command=pgbackrest --stanza=flexorch archive-push %p
       - -c
@@ -56,11 +60,13 @@ services:
     depends_on:
       seaweedfs:
         condition: service_healthy
+        required: false # not there with backups off
     restart: unless-stopped
 
   seaweedfs:
     image: ${S3_IMAGE:-chrislusf/seaweedfs:3.97}
     container_name: flexorch-s3
+    profiles: [backups]
     command:
       - server
       - -dir=/data

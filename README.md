@@ -31,6 +31,22 @@ Parallel execution needs Ray (the `ray` extra): `pip install -e ".[ray]"`.
 | Postgres | `db="postgresql://user@host/db"`, `data_dir=...` | The login comes from `FLEXORCH_DB_PASSWORD_FILE`, `FLEXORCH_DB_USER` / `FLEXORCH_DB_PASSWORD`, or libpq (`PGPASSWORD`, `~/.pgpass`). It never comes from code. |
 | remote | `acquirium_url="http://acquirium:8000"` | A running Acquirium that holds its own database secret. |
 
+### A long-lived Acquirium
+
+A managed Acquirium lives only as long as the first process that opened its
+`data_dir`. For one that keeps running (its own drivers and data processing,
+or a local app's store), start it on its own:
+
+```
+flex-orch --data-dir .flexorch acquirium start     # or: --config acquirium.toml
+flex-orch --data-dir .flexorch acquirium status
+flex-orch --data-dir .flexorch acquirium stop
+```
+
+While it runs, `Orchestrator(data_dir=".flexorch")` attaches to it and leaves
+it running. Set `FLEXORCH_START_ACQUIRIUM=0` to make scripts fail when it isn't
+running, rather than start a short-lived one on the same data.
+
 ### Without Acquirium
 
 To keep studies in a folder on disk, with no server, pass a `FileBackend`:
@@ -51,10 +67,13 @@ See [examples/ro_study/store_on_disk.py](examples/ro_study/store_on_disk.py).
 
 ### A deployed tenant, over HTTP
 
-A tenant stack can serve its HTTP API (`pip install -e ".[server]"`, then
-`flex-orch serve`; see [deploy/tenant](deploy/tenant/README.md)). From
-anywhere, `Orchestrator(url=...)` is a client for it, with the same methods
-for what the API covers:
+A tenant stack serves its HTTP API (`pip install -e ".[server]"`, then
+`flex-orch serve`; see [deploy/tenant](deploy/tenant/README.md)) behind the
+gateway ([deploy/gateway](deploy/gateway/README.md)), at
+`https://<host>/<tenant>/`. From anywhere, `Orchestrator(url=...)` is a client
+for it, with the same methods for what the API covers. A UI generates its
+client from [docs/schemas/openapi.json](docs/schemas/openapi.json)
+(`flex-orch openapi`).
 
 ```python
 from flex_orchestrator import Orchestrator

@@ -10,6 +10,9 @@
     FLEXORCH_API_TOKENS_FILE more of them, one per line (deploy/tenant/api_token.sh)
     FLEXORCH_ACQUIRIUM_URL   the tenant's Acquirium (mode 3)
     FLEXORCH_PLUGINS         the plugins to load (D18)
+    FLEXORCH_CORS_ORIGINS    browser origins allowed to call it, comma-separated
+    FLEXORCH_IDLE_MINUTES    stop after this long with no requests (unset: never)
+    FLEXORCH_ROOT_PATH       the prefix a gateway serves it under, e.g. /tenant_a
 
 ``FLEXORCH_API_TOKENS`` lists ``user:role:sha256:<hex>`` entries separated by
 ``;`` or newlines: the SHA-256 of each token, never the token
@@ -58,6 +61,15 @@ class Settings:
         api_tokens: ``{hash: Principal}`` from ``FLEXORCH_API_TOKENS``.
         local_user: Local mode: the user every request is, as owner, with no
             tokens; ``None`` checks tokens.
+        cors_origins: Browser origins (``https://ui.example.org``) allowed to
+            call the API from a page; in local mode, loopback origins are too.
+        idle_minutes: Stop the server after this long with no requests and no
+            job running (:mod:`~flex_orchestrator.server.idle`); ``None`` runs
+            until stopped.
+        root_path: The path prefix a gateway serves the API under, e.g.
+            ``/tenant_a``; ``""`` at the root. The gateway strips it, and ``flex-orch
+            serve`` gives it to uvicorn, which puts it back, so the schema's
+            ``servers`` and the docs name it.
         plugins: The plugins to load (names or :class:`~flex_orchestrator.ext.Plugin`).
         orchestrator: Keyword arguments for the orchestrator (``backend=``,
             ``acquirium_url=``, ...); by default it connects as
@@ -72,6 +84,9 @@ class Settings:
     jwks: dict[str, Any] | None = None
     api_tokens: dict[str, Principal] = field(default_factory=dict)
     local_user: str | None = None
+    cors_origins: tuple[str, ...] = ()
+    idle_minutes: float | None = None
+    root_path: str = ""
     plugins: tuple[Any, ...] = ()
     orchestrator: dict[str, Any] = field(default_factory=dict)
     environ: Mapping[str, str] | None = None
@@ -80,6 +95,20 @@ class Settings:
         """Refuse settings that couldn't authenticate anyone."""
         if not self.tenant:
             raise ValueError("Settings need the tenant (FLEXORCH_TENANT).")
+        if self.idle_minutes is not None and self.idle_minutes <= 0:
+            raise ValueError("FLEXORCH_IDLE_MINUTES must be positive (unset: never).")
+        if self.root_path and (
+            not self.root_path.startswith("/") or self.root_path.endswith("/")
+        ):
+            raise ValueError(
+                "FLEXORCH_ROOT_PATH is like /tenant_a: a leading /, no trailing one."
+            )
+        for origin in self.cors_origins:
+            if origin == "*" or not origin.startswith(("http://", "https://")):
+                raise ValueError(
+                    "FLEXORCH_CORS_ORIGINS lists origins like "
+                    f"https://ui.example.org, not {origin!r}."
+                )
         if self.local_user is not None:
             if self.oidc_issuer or self.jwks or self.api_tokens:
                 raise ValueError("Local mode takes no tokens or identity provider.")
@@ -125,8 +154,19 @@ class Settings:
                 raise ValueError(
                     f"Can't read FLEXORCH_API_TOKENS_FILE: {exc.strerror}"
                 ) from None
+        idle = env.get("FLEXORCH_IDLE_MINUTES", "").strip()
+        try:
+            idle_minutes = float(idle) if idle else None
+        except ValueError:
+            raise ValueError(
+                "FLEXORCH_IDLE_MINUTES must be a number of minutes."
+            ) from None
+        origins = env.get("FLEXORCH_CORS_ORIGINS", "").split(",")
         return cls(
             tenant=env.get("FLEXORCH_TENANT", ""),
+            cors_origins=tuple(o.strip() for o in origins if o.strip()),
+            idle_minutes=idle_minutes,
+            root_path=env.get("FLEXORCH_ROOT_PATH", "").strip(),
             oidc_issuer=env.get("FLEXORCH_OIDC_ISSUER") or None,
             oidc_audience=env.get("FLEXORCH_OIDC_AUDIENCE") or None,
             jwks_url=env.get("FLEXORCH_OIDC_JWKS_URL") or None,

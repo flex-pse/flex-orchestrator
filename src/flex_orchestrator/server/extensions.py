@@ -54,6 +54,11 @@ def mount(app: FastAPI, plugins: Any) -> list[str]:
                 prefix=prefix,
                 dependencies=[Depends(current_principal)],
                 tags=[f"plugin:{plugin.name}"],
+                # The plugin's name in front, so a generated client's
+                # function can't collide with a core route's.
+                generate_unique_id_function=lambda route, name=plugin.name: (
+                    f"{name}_{route.name}"
+                ),
             )
             mounted.append(prefix + own)
     return mounted
