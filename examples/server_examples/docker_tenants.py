@@ -2,9 +2,12 @@
 
 Where ``local_mode.py`` and ``users_and_tokens.py`` run a server in a thread,
 this one runs the real deployment: the shared cluster (Postgres), the gateway
-(Traefik, HTTPS), and two tenant stacks, each with its own Acquirium and API
-in containers. The script sets them up with the deploy scripts, the way an
-operator would, then uses them as three users would:
+(Traefik), and two tenant stacks, each with its own Acquirium and API in
+containers. The script sets them up with the deploy scripts, the way the app
+in front of flex-orchestrator would: the app makes the secrets (here, each
+tenant's database password and each user's token) and hands them over, and
+the deploy scripts keep only what they need (the password file, the tokens'
+hashes). Then it uses them as three users would:
 
 - alice, the owner of ``demo_a``, runs the RO surrogate sweep there;
 - vic, a viewer of ``demo_a``, reads it, and can't delete it;
@@ -13,18 +16,24 @@ operator would, then uses them as three users would:
 
     python examples/server_examples/docker_tenants.py [--keep]
 
+The gateway serves plain HTTP on 127.0.0.1 only (``init_gateway.sh
+--plain-http``): this machine is the only client. A deployment others use gets
+the app's certificate instead (``init_gateway.sh --cert FILE --key FILE``).
+
 The tenants are removed at the end, unless ``--keep``; the cluster and the
 gateway are left running (``docker compose -f deploy/gateway/compose.gateway.yaml
 down`` stops the gateway). The first run builds the image, which takes a while.
 
 It needs Docker with Compose v2 where ``bash`` runs: here on Linux or macOS;
 on Windows, in WSL (``FLEXORCH_DOCKER_SHELL``, ``wsl.exe --`` by default, runs
-the commands there). The gateway listens on ``FLEXORCH_DEMO_HTTPS_PORT``
-(18443) and ``FLEXORCH_DEMO_HTTP_PORT`` (18080).
+the commands there). The gateway listens on ``FLEXORCH_DEMO_HTTP_PORT``
+(18080); its HTTPS port, ``FLEXORCH_DEMO_HTTPS_PORT`` (18443), serves nothing.
 """
 
+import hashlib
 import os
 import re
+import secrets
 import shlex
 import subprocess
 import sys
@@ -37,7 +46,7 @@ from flex_orchestrator.errors import AccessError
 REPO = HERE.parents[1]
 HTTPS = os.environ.get("FLEXORCH_DEMO_HTTPS_PORT", "18443")
 HTTP = os.environ.get("FLEXORCH_DEMO_HTTP_PORT", "18080")
-GATEWAY = f"https://localhost:{HTTPS}"
+GATEWAY = f"http://localhost:{HTTP}"
 SHELL = shlex.split(
     os.environ.get("FLEXORCH_DOCKER_SHELL", "wsl.exe --" if os.name == "nt" else "")
 )
@@ -68,6 +77,25 @@ def deploy(script: str) -> str:
     return done.stdout.decode()
 
 
+def new_tenant(tenant: str) -> None:
+    """Provision ``tenant`` with a database password the app made.
+
+    It goes to the script on stdin (``--password-file -``), inside the script
+    bash reads, so it's on no command line.
+    """
+    password = secrets.token_urlsafe(30)
+    deploy(f"echo {password} | bash provision_tenant.sh {tenant} "
+           "--password-file - 2>/dev/null")  # fmt: skip
+
+
+def new_token(tenant: str, user: str, role: str) -> str:
+    """A token the app made for ``user``; the tenant keeps only its hash."""
+    token = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    deploy(f"bash api_token.sh {tenant} {user} {role} --sha256 {digest} 2>/dev/null")
+    return token
+
+
 def refused(call) -> str:
     try:
         call()
@@ -84,38 +112,35 @@ if __name__ == "__main__":
         "../.. >/dev/null"
     )
     deploy("bash init_cluster.sh 2>/dev/null")
-    deploy("bash ../gateway/init_gateway.sh 2>/dev/null")
-    ca = HERE / "tmp_flexorch" / "gateway-ca.crt"  # the gateway's own CA
-    ca.parent.mkdir(exist_ok=True)
-    ca.write_text(deploy('source lib.sh; cat "$GATEWAY_DIR/ca.crt"'))
+    deploy("bash ../gateway/init_gateway.sh --plain-http 2>/dev/null")
 
     print("2. two tenants, three users")
     for tenant in ("demo_a", "demo_b"):
-        deploy(f"bash provision_tenant.sh {tenant} 2>/dev/null")
-    alice_token = deploy("bash api_token.sh demo_a alice owner 2>/dev/null").strip()
-    vic_token = deploy("bash api_token.sh demo_a vic viewer 2>/dev/null").strip()
-    carol_token = deploy("bash api_token.sh demo_b carol owner 2>/dev/null").strip()
+        new_tenant(tenant)
+    alice_token = new_token("demo_a", "alice", "owner")
+    vic_token = new_token("demo_a", "vic", "viewer")
+    carol_token = new_token("demo_b", "carol", "owner")
     for tenant in ("demo_a", "demo_b"):
         deploy(f"bash start_tenant.sh {tenant} 2>/dev/null")
     print(f"   demo_a's API: {GATEWAY}/demo_a/docs")
 
     try:
         print("3. alice runs the surrogate sweep in demo_a")
-        alice = Orchestrator(url=f"{GATEWAY}/demo_a", token=alice_token, cafile=ca)
+        alice = Orchestrator(url=f"{GATEWAY}/demo_a", token=alice_token)
         new_study("ro_in_docker", alice)  # data and spec, its tariff file too
         alice.execute_study(STUDY)  # on demo_a's job queue, in its container
         report(alice)
 
         print("4. vic reads it; carol can't")
         vic = Orchestrator(
-            url=f"{GATEWAY}/demo_a", token=vic_token, cafile=ca, study="ro_in_docker"
+            url=f"{GATEWAY}/demo_a", token=vic_token, study="ro_in_docker"
         )
         print("   vic sees:", [r.tag for r in vic.stored_model_results()])
         print("   vic deletes a result:",
               refused(lambda: vic.delete("result", "linear_surrogate")))  # fmt: skip
-        carol_at_a = Orchestrator(url=f"{GATEWAY}/demo_a", token=carol_token, cafile=ca)
+        carol_at_a = Orchestrator(url=f"{GATEWAY}/demo_a", token=carol_token)
         print("   carol in demo_a:", refused(carol_at_a.studies))
-        carol = Orchestrator(url=f"{GATEWAY}/demo_b", token=carol_token, cafile=ca)
+        carol = Orchestrator(url=f"{GATEWAY}/demo_b", token=carol_token)
         print("   carol's studies in demo_b:", carol.studies())
     finally:
         if "--keep" not in sys.argv:

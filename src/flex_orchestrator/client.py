@@ -111,7 +111,8 @@ class RemoteOrchestrator:
         frame: ``polars`` or ``pandas``, for :meth:`get_data`.
         timeout: Seconds per request.
         cafile: A CA certificate to trust for ``https://`` URLs besides the
-            system's, e.g. a gateway's own CA on an air-gapped site.
+            system's, e.g. the CA of a certificate an app issued itself on
+            an air-gapped site.
         transport: How requests are sent (tests pass an in-process one).
         environ: Where ``FLEXORCH_TOKEN`` is read.
     """

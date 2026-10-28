@@ -3,17 +3,20 @@ idle tenants and backups that are off.
 
 Opt-in like ``test_deploy.py`` (``FLEXORCH_TEST_DEPLOY``), on the same
 cluster. The gateway is (re)started on test ports, ``FLEXORCH_TEST_HTTPS_PORT``
-(18443) and ``FLEXORCH_TEST_HTTP_PORT`` (18080), with its generated CA; four
-fresh tenants are provisioned and removed afterwards.
+(18443) and ``FLEXORCH_TEST_HTTP_PORT`` (18080), with a certificate the tests
+make, as the app would supply one; four fresh tenants are provisioned and
+removed afterwards.
 
 The generated-client test generates a Python client from
 ``docs/schemas/openapi.json`` with ``openapi-python-client``: on ``PATH``, or
 at ``FLEXORCH_OPENAPI_GENERATOR``.
 """
 
+import hashlib
 import importlib
 import json
 import os
+import secrets
 import shlex
 import shutil
 import ssl
@@ -42,6 +45,32 @@ PORTS = (
     f"export FLEXORCH_GATEWAY_HTTPS_PORT={HTTPS} FLEXORCH_GATEWAY_HTTP_PORT={HTTP}\n"
 )
 UI = "https://ui.test"
+# A throwaway CA and a certificate for localhost, in a new folder (printed):
+# what the app would supply.
+CERTIFICATE = r"""
+folder="$(mktemp -d)"
+docker run --rm --user "$(id -u):$(id -g)" -v "$folder:/out" -w /out --entrypoint bash \
+    "${PG_IMAGE:-timescale/timescaledb-ha:pg17.6-ts2.22.0}" -c '
+    set -e
+    openssl req -x509 -newkey rsa:2048 -nodes -days 2 -keyout ca.key -out ca.crt \
+        -subj /CN=flexorch-test-ca 2>/dev/null
+    openssl req -newkey rsa:2048 -nodes -keyout tls.key -out tls.csr \
+        -subj /CN=localhost 2>/dev/null
+    printf "subjectAltName=DNS:localhost,IP:127.0.0.1\n" > tls.ext
+    openssl x509 -req -in tls.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 2 \
+        -extfile tls.ext -out tls.crt 2>/dev/null'
+echo "$folder"
+"""
+
+
+def app_token(tenant, user, role):
+    """A token made as the app would make it, registered by its hash only."""
+    token = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    sh(f"bash api_token.sh {tenant} {user} {role} --sha256 {digest} >/dev/null 2>&1")
+    return token
+
+
 COST = "costing.aggregate_operating_cost"
 
 
@@ -50,14 +79,20 @@ def stack(tmp_path_factory):
     """Four tenants behind the gateway, each with an owner's and a viewer's token.
 
     ``a``, ``b`` and ``c`` are persistent (``c`` serves the UI origin); ``idle``
-    times out after a minute and isn't backed up.
+    times out after a minute and isn't backed up. ``b``'s database password is
+    one the app supplied. Owners' tokens are the app's (registered by hash),
+    viewers' are made by ``api_token.sh``.
     """
     sh(
         'docker image inspect "$FLEXORCH_IMAGE" >/dev/null 2>&1 || docker build '
         '-f ../docker/Dockerfile -t "$FLEXORCH_IMAGE" ../.. >/dev/null'
     )
     sh("bash init_cluster.sh >/dev/null 2>&1")
-    sh(PORTS + "bash ../gateway/init_gateway.sh >/dev/null 2>&1")
+    certificate = sh(CERTIFICATE).strip()
+    sh(
+        PORTS + f"bash ../gateway/init_gateway.sh --cert {certificate}/tls.crt "
+        f"--key {certificate}/tls.key >/dev/null 2>&1"
+    )
     key = uuid.uuid4().hex[:6]
     names = {k: f"gw_{k}_{key}" for k in ("a", "b", "c", "idle")}
     options = {
@@ -65,20 +100,25 @@ def stack(tmp_path_factory):
         "idle": "--idle-minutes 1 --tenant-backups off",
     }
     ca = tmp_path_factory.mktemp("gateway") / "ca.crt"
-    ca.write_text(sh('cat "$GATEWAY_DIR/ca.crt"'))
+    ca.write_text(sh(f"cat {certificate}/ca.crt"))
+    sh(f"rm -rf {certificate}")
+    passwords = {"b": secrets.token_urlsafe(30)}
     try:
         tokens = {}
         for k, tenant in names.items():
             extra = options.get(k, "")
-            sh(f"bash provision_tenant.sh {tenant} {extra} >/dev/null 2>&1")
+            given = ""
+            if k in passwords:
+                given, extra = f"echo {passwords[k]} | ", extra + " --password-file -"
+            sh(f"{given}bash provision_tenant.sh {tenant} {extra} >/dev/null 2>&1")
             tokens[k] = {
-                role: sh(
-                    f"bash api_token.sh {tenant} {k}_{role} {role} 2>/dev/null"
-                ).strip()
-                for role in ("owner", "viewer")
+                "owner": app_token(tenant, f"{k}_owner", "owner"),
+                "viewer": sh(
+                    f"bash api_token.sh {tenant} {k}_viewer viewer 2>/dev/null"
+                ).strip(),
             }
             sh(f"bash start_tenant.sh {tenant} >/dev/null 2>&1")
-        yield {"names": names, "tokens": tokens, "ca": str(ca)}
+        yield {"names": names, "tokens": tokens, "ca": str(ca), "passwords": passwords}
     finally:
         for tenant in names.values():
             sh(f"bash deprovision_tenant.sh {tenant} >/dev/null 2>&1", check=False)
@@ -145,6 +185,15 @@ def test_https_only_with_tls_1_2_or_later(stack):
     old.maximum_version = ssl.TLSVersion.TLSv1_1
     with pytest.raises((httpx.ConnectError, ssl.SSLError)):
         httpx.get(f"{GATEWAY}/{a}/health", verify=old)
+    # It never makes a certificate: with none supplied, and none chosen
+    # before, it refuses to start.
+    for given in ("", "--https", "--cert /nowhere/tls.crt"):
+        refused = sh(
+            'empty="$(mktemp -d)"; FLEXORCH_SECRETS="$empty" '
+            f"bash ../gateway/init_gateway.sh {given} 2>&1 || echo rc=$?; "
+            'rm -rf "$empty"'
+        )
+        assert "rc=1" in refused, refused
 
 
 def test_the_gateway_reaches_apis_only(stack):
@@ -195,6 +244,42 @@ def test_cors_for_a_tenant_with_a_ui_origin(stack):
     with client(stack, names["a"]) as a:  # no UI origin for a
         found = a.options("/studies", headers=preflight)
         assert "access-control-allow-origin" not in found.headers
+
+
+# Secrets the app supplies
+
+
+def test_secrets_the_app_supplies(stack):
+    b, token = stack["names"]["b"], stack["tokens"]["b"]["owner"]
+    pgpass = f'cat "$FLEXORCH_SECRETS/tenants/{b}/pgpass"'
+    assert sh(pgpass).strip() == f"flexorch-pg:5432:{b}:{b}:{stack['passwords']['b']}"
+    # A new one changes the role's password; Acquirium connects with it.
+    new = secrets.token_urlsafe(30)
+    sh(f"echo {new} | bash provision_tenant.sh {b} --password-file - >/dev/null 2>&1")
+    assert sh(pgpass).strip().endswith(f":{new}")
+    sh(f"bash stop_tenant.sh {b} >/dev/null 2>&1")
+    sh(f"bash start_tenant.sh {b} >/dev/null 2>&1")
+    with client(stack, b, token) as c:  # the owner's token, registered by hash
+        assert c.get("/studies").status_code == 200
+    # Ones that would need quoting, or are short, are refused; nothing changes.
+    for bad in ("short", "has'a-quote-and-is-long", "has:a-colon-and-is-long"):
+        refused = sh(
+            f"echo {shlex.quote(bad)} | bash provision_tenant.sh {b} "
+            "--password-file - 2>&1 || echo rc=$?"
+        )
+        assert "at least 16" in refused and "rc=1" in refused
+    assert sh(pgpass).strip().endswith(f":{new}")
+    refused = sh(f"bash api_token.sh {b} x owner --sha256 nothex 2>&1 || echo rc=$?")
+    assert "64 hex digits" in refused and "rc=1" in refused
+    # The identity provider is a tenant's setting, kept for every later start.
+    issuer = "--oidc-issuer https://id.test/realms/flex --oidc-audience flexorch"
+    sh(f"bash provision_tenant.sh {b} --no-start {issuer} >/dev/null 2>&1")
+    config = sh(f"tenant_compose {b} --profile api config api")
+    assert "FLEXORCH_OIDC_ISSUER: https://id.test/realms/flex" in config
+    assert "FLEXORCH_OIDC_AUDIENCE: flexorch" in config
+    cleared = '--oidc-issuer "" --oidc-audience ""'
+    sh(f"bash provision_tenant.sh {b} --no-start {cleared} >/dev/null 2>&1")
+    assert "id.test" not in sh(f"tenant_compose {b} --profile api config api")
 
 
 # A UI-like client, generated from the published schema, runs scripts 3 and 4
@@ -443,14 +528,20 @@ def test_the_docker_tenants_example(stack):
         "FLEXORCH_DEMO_HTTP_PORT": str(HTTP),
     }
     example = REPO / "examples" / "server_examples" / "docker_tenants.py"
-    done = subprocess.run(
-        [sys.executable, str(example)],
-        capture_output=True,
-        text=True,
-        timeout=1800,
-        env=env,
-    )
+    try:
+        done = subprocess.run(
+            [sys.executable, str(example)],
+            capture_output=True,
+            text=True,
+            timeout=1800,
+            env=env,
+        )
+        # Its gateway is plain HTTP, so it's published on this machine only.
+        published = sh("docker port flexorch-gateway 8080/tcp").split()
+    finally:
+        sh(PORTS + "bash ../gateway/init_gateway.sh --https >/dev/null 2>&1")
     assert done.returncode == 0, done.stdout[-3000:] + done.stderr[-3000:]
+    assert published == [f"127.0.0.1:{HTTP}"]
     for line in (
         "fixed_intensity: $1,285.96",
         "linear_surrogate: $1,238.92",

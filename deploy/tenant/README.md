@@ -5,6 +5,12 @@ One stack per tenant (a group or project) on a shared Postgres cluster
 networks and containers; nothing is shared between tenants but the cluster,
 which each tenant reaches only as its own role.
 
+This is the **reference deployment**: for development, tests and the
+examples, and a starting point. The app in front of flex-orchestrator governs
+identities, certificates and secrets; every script here takes the secrets it
+supplies, and generates only the ones it doesn't. What the app sets and
+supplies is in [docs/configuration.md](../../docs/configuration.md).
+
 ```
  gateway (Traefik, HTTPS) ──flexorch_<tenant>_edge──► api ─┐
               ┌──────────── flexorch_<tenant> (internal) ──┼─────────┐
@@ -23,8 +29,8 @@ The gateway is in [`deploy/gateway`](../gateway/README.md).
 | `compose.cluster.yaml` | Postgres 17 + TimescaleDB with WAL archiving, and SeaweedFS as the S3 store backups go to |
 | `compose.tenant.yaml` | one tenant's stack: its Acquirium, its API, and the orchestrator container scripts run in |
 | `pg_hba.conf` | a role may log in only to the database of its own name; the admin only over the socket |
-| `init_cluster.sh` | first run: secrets, CA and TLS certificate, bucket, pgBackRest stanza, first full backup; `FLEXORCH_BACKUPS=off` for none |
-| `provision_tenant.sh <t> [options]` | role, database, password, networks, gateway route, settings; then starts its Acquirium |
+| `init_cluster.sh` | the cluster's secrets (supplied, or generated when missing), bucket, pgBackRest stanza, first full backup; `FLEXORCH_BACKUPS=off` for none |
+| `provision_tenant.sh <t> [options]` | role, database, password (supplied or generated), networks, gateway route, settings; then starts its Acquirium |
 | `start_tenant.sh <t>` / `stop_tenant.sh <t>` | start (and wait for) or stop a tenant's Acquirium and API; its data is kept |
 | `idle_tenants.sh` | from cron: stops the Acquirium of each tenant whose API timed out |
 | `deprovision_tenant.sh <t>` | a final backup, then removes the stack, volumes, networks, database, role and secret |
@@ -32,7 +38,7 @@ The gateway is in [`deploy/gateway`](../gateway/README.md).
 | `backup_cluster.sh [full\|diff\|incr]` | the nightly pgBackRest backup, then every tenant's |
 | `restore_tenant.sh <t> <time\|id> --into <new>` | point-in-time (or from a tenant backup) restore into a new tenant |
 | `smoke.py` | a short study a tenant's orchestrator container runs, for checking a stack |
-| `api_token.sh <t> <user> <role>` | a token for the tenant's HTTP API, printed once; only its hash is kept |
+| `api_token.sh <t> <user> <role> [--sha256 HEX]` | registers a token the app made, by its hash; or makes one and prints it once. Only hashes are kept |
 
 The image is `deploy/docker/Dockerfile`: one image for the orchestrator, the
 Acquirium server and Ray nodes.
@@ -81,14 +87,19 @@ options, the gateway's routes) are in `$FLEXORCH_SECRETS/settings`.
 - `--tenant-backups off`: the tenant isn't backed up.
 - `--cors-origins https://ui.example.org`: the browser origins its API serves,
   for a UI on another origin than the gateway.
+- `--password-file FILE` (or `-`, stdin): the database password the app made,
+  instead of a random one; given again, it changes it.
+- `--oidc-issuer URL --oidc-audience AUD` (and `--oidc-jwks-url URL`): the
+  identity provider whose JWTs its API accepts.
 
-**Add a user**: with static tokens,
-`./api_token.sh tenant_a alice editor` prints alice's token once (viewer,
-editor or owner); give it to her, and she runs `flex-orch login`. To revoke it,
+**Add a user**: with an identity provider, users and passwords are its own:
+give the user the `tenant` and `role` claims there. With static tokens, the
+app makes the token and registers its hash,
+`./api_token.sh tenant_a alice editor --sha256 <hex>` (viewer, editor or
+owner); or `./api_token.sh tenant_a alice editor` makes one and prints it
+once, and alice runs `flex-orch login` with it. To revoke one,
 delete its line from `$FLEXORCH_SECRETS/tenants/tenant_a/api_tokens` and
 restart the API (`./stop_tenant.sh tenant_a && ./start_tenant.sh tenant_a`).
-With an identity provider, users and passwords are its own: give the user the
-`tenant` and `role` claims there.
 
 **Back up**: schedule `./backup_cluster.sh` nightly (cron or a systemd timer);
 `./backup_tenant.sh tenant_a` backs one tenant up now. Restore with
@@ -118,29 +129,34 @@ A tenant's API (`flex-orch serve`, PLAN.md M7) is the `api` service, which
 `start_tenant.sh` starts:
 
 ```bash
-./api_token.sh tenant_a alice editor            # prints the token once
+./api_token.sh tenant_a alice editor --sha256 <hex>   # a token the app made
 ./start_tenant.sh tenant_a
 ```
 
 It publishes no port. The gateway reaches it on the tenant's edge network and
 serves it at `https://<host>/tenant_a/` (`Orchestrator(url=
 "https://<host>/tenant_a", token=...)`; its docs at `/tenant_a/docs`).
-Inside the stack, it's `http://api:8080`. Tokens are viewer, editor or owner. `api_token.sh` keeps only each token's
-SHA-256, in `$FLEXORCH_SECRETS/tenants/<t>/api_tokens`; delete a line and
-restart `api` to revoke one. With an identity provider instead, set
-`FLEXORCH_OIDC_ISSUER` and `FLEXORCH_OIDC_AUDIENCE`: JWTs must carry the
-tenant's name in a `tenant` claim and a `role` claim.
+Inside the stack, it's `http://api:8080`. Tokens are viewer, editor or owner.
+Only each token's SHA-256 is kept, in `$FLEXORCH_SECRETS/tenants/<t>/api_tokens`;
+delete a line and restart `api` to revoke one. With an identity provider
+instead, `provision_tenant.sh <t> --oidc-issuer URL --oidc-audience AUD`: JWTs
+must carry the tenant's name in a `tenant` claim and a `role` claim.
 
 ## Secrets
 
-`init_cluster.sh` writes the cluster's secrets to `$FLEXORCH_SECRETS/cluster`
-(mode 600): the Postgres admin password, the S3 keys, the backup passphrase,
-and a CA with the S3 server's certificate. `provision_tenant.sh` writes each
-tenant's password to `$FLEXORCH_SECRETS/tenants/<t>/pgpass`, mounted only into
-that tenant's Acquirium as a libpq password file. The password is never in an
-environment variable, a command line, a DSN or a log; users and the
-orchestrator never see it. Re-provision a tenant (deprovision, restore) to
-rotate it.
+Every secret is a file under `$FLEXORCH_SECRETS` (mode 600, uid 1000). The app
+may supply each one, and the scripts use it; they generate only the ones it
+doesn't ([docs/configuration.md](../../docs/configuration.md) lists them):
+
+- `init_cluster.sh`, in `$FLEXORCH_SECRETS/cluster`: the Postgres admin
+  password, the backup passphrase, the S3 keys, and the backup store's internal
+  TLS certificate. A file already there is used as is.
+- `provision_tenant.sh --password-file`: the tenant's database password,
+  written only to `$FLEXORCH_SECRETS/tenants/<t>/pgpass`, which is mounted only
+  into that tenant's Acquirium as a libpq password file. Given again, it changes
+  the password. The password is never in an environment variable, a command
+  line, a DSN or a log; users and the orchestrator never see it.
+- `api_token.sh --sha256`: a token's hash; the token itself stays with the app.
 
 ## Backups and restore
 
@@ -191,12 +207,14 @@ network, volume, secret, hardening), run the smoke study in mode 3, and run the
 restore drill; the tenants are removed afterwards.
 
 `test_gateway.py` (the same setting) restarts the gateway on ports 18443 and
-18080 and puts four tenants behind it: each answers only its own tokens, the
-gateway reaches no Acquirium, only TLS 1.2 or later, CORS for the tenant with
-a UI origin, a client generated from `docs/schemas/openapi.json` (with
-`openapi-python-client`) runs the smoke study and the RO surrogate sweep and
-follows them by their progress streams, an idle tenant stops and starts again,
-and backups that are off do nothing.
+18080, with a certificate it makes as the app would supply one, and puts four
+tenants behind it: each answers only its own tokens, the gateway reaches no
+Acquirium, only TLS 1.2 or later (and no gateway without a certificate),
+CORS for the tenant with a UI origin, a database password and tokens the app
+supplied (and a password changed), a client generated from
+`docs/schemas/openapi.json` (with `openapi-python-client`) runs the smoke
+study and the RO surrogate sweep and follows them by their progress streams,
+an idle tenant stops and starts again, and backups that are off do nothing.
 
 ## For production
 

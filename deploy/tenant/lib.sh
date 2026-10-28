@@ -15,6 +15,12 @@
 #                            minutes, and idle_tenants.sh then stops Acquirium
 #   FLEXORCH_TENANT_BACKUPS  on or off: whether it's backed up
 #   FLEXORCH_CORS_ORIGINS    browser origins its API serves (a UI's), comma-separated
+#   FLEXORCH_OIDC_ISSUER, FLEXORCH_OIDC_AUDIENCE, FLEXORCH_OIDC_JWKS_URL
+#                            the identity provider its API accepts JWTs from
+#                            (empty: the environment's, when the stack starts)
+#
+# The gateway's, $FLEXORCH_SECRETS/settings/gateway.env (init_gateway.sh):
+#   FLEXORCH_GATEWAY_TLS     on: HTTPS with a supplied certificate; off: plain HTTP
 
 set -euo pipefail
 
@@ -28,8 +34,9 @@ GATEWAY=flexorch-gateway
 CLUSTER_NETWORK=flexorch_cluster
 SETTINGS_DIR="$FLEXORCH_SECRETS/settings" # not secret: readable by whoever runs the scripts
 CLUSTER_SETTINGS="$SETTINGS_DIR/cluster.env"
-GATEWAY_DIR="$FLEXORCH_SECRETS/gateway" # its TLS key and certificate
+GATEWAY_DIR="$FLEXORCH_SECRETS/gateway" # its TLS key and certificate, if supplied
 ROUTES_DIR="$SETTINGS_DIR/gateway"     # its routes (not secret); Traefik watches it
+GATEWAY_SETTINGS="$SETTINGS_DIR/gateway.env"
 STANZA=flexorch
 # Every container a stack runs is uid 1000 (deploy/docker/Dockerfile and
 # timescaledb-ha), so secret files belong to it.
@@ -80,6 +87,26 @@ write_secret() {
     if [[ "$(id -u)" != "$SECRET_UID" ]]; then
         sudo chown "$SECRET_UID:$SECRET_UID" "$path" "$(dirname "$path")"
     fi
+}
+
+# Install a secret someone else made: copy the file at $1 (or stdin, for -)
+# to $2 with write_secret. Refuses an empty one.
+install_secret() {
+    local from="$1" to="$2"
+    if [[ "$from" == - ]]; then
+        write_secret "$to"
+    else
+        [[ -f "$from" ]] || die "$from isn't a file"
+        [[ "$(realpath "$from")" == "$(realpath -m "$to")" ]] && return
+        write_secret "$to" <"$from"
+    fi
+    [[ -s "$to" ]] || die "$from is empty"
+}
+
+# A secret that goes into a config file or SQL as is must be one line of
+# letters, digits and ._~+/=- (nothing that needs quoting), at least 16 long.
+check_secret_value() {
+    [[ "$2" =~ ^[A-Za-z0-9._~+/=-]{16,}$ ]]         || die "$1 must be at least 16 letters, digits or ._~+/=- on one line"
 }
 
 # psql as the cluster admin, over the container's socket. SQL comes on stdin,
@@ -141,14 +168,18 @@ tenant_backups_on() {
 }
 
 tenant_compose() {
-    local tenant="$1" idle restart=unless-stopped cors
+    local tenant="$1" idle restart=unless-stopped cors issuer audience jwks
     shift
     cors="$(tenant_setting "$tenant" FLEXORCH_CORS_ORIGINS "${FLEXORCH_CORS_ORIGINS:-}")"
+    issuer="$(tenant_setting "$tenant" FLEXORCH_OIDC_ISSUER "${FLEXORCH_OIDC_ISSUER:-}")"
+    audience="$(tenant_setting "$tenant" FLEXORCH_OIDC_AUDIENCE "${FLEXORCH_OIDC_AUDIENCE:-}")"
+    jwks="$(tenant_setting "$tenant" FLEXORCH_OIDC_JWKS_URL "${FLEXORCH_OIDC_JWKS_URL:-}")"
     idle="$(tenant_setting "$tenant" FLEXORCH_IDLE_MINUTES 0)"
     # An API that stops itself when idle mustn't be restarted for it.
     if [[ "$idle" == 0 ]]; then idle=""; else restart=on-failure; fi
     TENANT="$tenant" FLEXORCH_IDLE_MINUTES="$idle" FLEXORCH_API_RESTART="$restart" \
-        FLEXORCH_CORS_ORIGINS="$cors" compose -f "$HERE/compose.tenant.yaml" -p "$(tenant_project "$tenant")" "$@"
+        FLEXORCH_CORS_ORIGINS="$cors" FLEXORCH_OIDC_ISSUER="$issuer" \
+        FLEXORCH_OIDC_AUDIENCE="$audience" FLEXORCH_OIDC_JWKS_URL="$jwks" compose -f "$HERE/compose.tenant.yaml" -p "$(tenant_project "$tenant")" "$@"
 }
 
 # The tenant's network with the gateway: only its API and the gateway are on
@@ -164,12 +195,23 @@ edge_network() {
     fi
 }
 
-# The gateway's route to a tenant's API: https://<host>/<tenant>/... goes to
-# its api container with the prefix stripped, and the API's server puts it
-# back (FLEXORCH_ROOT_PATH), so its schema and docs name it. Traefik watches
-# the folder.
+# Whether the gateway serves HTTPS: as init_gateway.sh recorded it, else on.
+gateway_tls_on() {
+    local value=""
+    [[ -f "$GATEWAY_SETTINGS" ]] && value="$(sed -n 's/^FLEXORCH_GATEWAY_TLS=//p' "$GATEWAY_SETTINGS")"
+    [[ "${value:-on}" == on ]]
+}
+
+# The gateway's route to a tenant's API: <scheme>://<host>/<tenant>/... goes
+# to its api container with the prefix stripped, and the API's server puts it
+# back (FLEXORCH_ROOT_PATH), so its schema and docs name it. HTTPS routes are
+# on the websecure entry point with HSTS; plain HTTP ones on web. Traefik
+# watches the folder.
 gateway_route() {
-    local tenant="$1"
+    local tenant="$1" entry=web middlewares="$1-prefix, secure-headers" tls=""
+    if gateway_tls_on; then
+        entry=websecure middlewares="$middlewares, hsts" tls="tls: {}"
+    fi
     mkdir -p "$ROUTES_DIR"
     cat >"$ROUTES_DIR/tenant_$tenant.yml" <<EOF
 # Written by provision_tenant.sh: $tenant's API behind the gateway.
@@ -177,10 +219,10 @@ http:
   routers:
     $tenant:
       rule: "PathPrefix(\`/$tenant/\`) || Path(\`/$tenant\`)"
-      entryPoints: [websecure]
+      entryPoints: [$entry]
       service: $tenant
-      middlewares: [$tenant-prefix, secure-headers]
-      tls: {}
+      middlewares: [$middlewares]
+      $tls
   middlewares:
     $tenant-prefix:
       stripPrefix:

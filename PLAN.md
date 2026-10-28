@@ -1251,6 +1251,11 @@ what they need:
 - `/health` and `/ready` endpoints;
 - an OpenAPI schema, from which a UI client is generated.
 
+The app governs identities, certificates and secrets (decided 2026-10-28): flex-orchestrator takes them as
+configuration and makes no policy. The server checks tokens and never stores passwords; the gateway never makes a
+certificate (the app's, or plain HTTP on loopback); every deploy script takes the secrets the app supplies and
+generates only the ones it doesn't. `deploy/` is a reference deployment. The contract is `docs/configuration.md`.
+
 ---
 
 ## 3. Target architecture
@@ -1821,8 +1826,13 @@ D21.
     redirects. `https://<host>/<tenant>/` goes to `api-<tenant>:8080` with the prefix stripped, and uvicorn puts it
     back (`FLEXORCH_ROOT_PATH`), so `/docs` and the schema's `servers` are right. Each tenant has an internal edge
     network that only its API and the gateway join; no Acquirium and no database is reachable from the gateway.
-    Certificates are your own, or a CA `init_gateway.sh` makes (air-gapped sites, tests); Let's Encrypt is
-    documented, not set up.
+    The certificate is the app's (`--cert`/`--key`, or `--https` with one it installed); the gateway never makes
+    one, and Let's Encrypt is the app's choice too. `--plain-http` serves HTTP on 127.0.0.1 only, for local use or
+    behind the app's own TLS proxy.
+  - **Secrets the app supplies** (D16): `init_cluster.sh` uses each cluster secret file already there and
+    generates only the missing ones (the S3 store's internal certificate included); `provision_tenant.sh
+    --password-file` (changes it when given again), `api_token.sh --sha256`, and the identity provider as a tenant
+    setting (`--oidc-issuer`, `--oidc-audience`, `--oidc-jwks-url`). `docs/configuration.md` is the contract.
   - **OpenAPI export:** `flex-orch openapi` writes the core routes' schema to `docs/schemas/openapi.json` (a test
     fails when it's stale). It declares the bearer token, and each operation is named after its route function
     (`store_spec`, `execute_study`; a plugin's are prefixed with its name), so a generated client reads well.
@@ -1841,7 +1851,8 @@ D21.
     tenant opts out with `--tenant-backups off`.
   - **Tests:** `server/tests/test_m8.py` (unit: CORS, SSE, the idle watch, the prefix, the schema).
     `tests/test_gateway.py` (opt-in, with `test_deploy.py`): four tenants behind the gateway, each answering only
-    its own tokens, the gateway reaching no Acquirium, TLS, CORS, a client generated from the schema running the
+    its own tokens, the gateway reaching no Acquirium, TLS with a supplied certificate (and none without one),
+    CORS, a password and tokens the app supplied, a client generated from the schema running the
     smoke study (script 4) and the RO surrogate sweep (script 3) by their progress streams, an idle tenant
     stopping and starting with its data, and backups that are off. The deploy workflow runs both.
   - Also fixed: `deprovision_tenant.sh` left the API container running.

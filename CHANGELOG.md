@@ -26,6 +26,18 @@
   `PermissionError` (a just-written file held by antivirus or the indexer).
 
 ### Changed
+- The app in front of flex-orchestrator governs identities, certificates and
+  secrets; `deploy/` is the reference deployment, and
+  [docs/configuration.md](docs/configuration.md) is what an app sets and
+  supplies. The gateway never makes a certificate:
+  `init_gateway.sh --cert FILE --key FILE` (or `--https`, with one the app
+  installed), or `--plain-http` on 127.0.0.1 only; with neither, it refuses.
+  `init_cluster.sh` uses each cluster secret file the app supplied and
+  generates only the missing ones. `provision_tenant.sh --password-file`
+  takes the tenant's database password (and changes it when given again);
+  `api_token.sh --sha256` registers a token the app made by its hash. The
+  identity provider is a tenant setting (`provision_tenant.sh --oidc-issuer
+  --oidc-audience --oidc-jwks-url`), kept for every start.
 - `retries` now covers only the model work (build, solve, export, or a dead
   Ray worker) on both paths. A task whose spec can't be prepared or whose
   result can't be stored is an error result at once; in-process this used
@@ -46,7 +58,8 @@
 
 ### Added
 - Multi-tenant integration (PLAN.md M8): a Traefik gateway (`deploy/gateway`)
-  serving each tenant at `https://<host>/<tenant>/` over TLS, with no Docker
+  serving each tenant at `https://<host>/<tenant>/` over TLS (the app's
+  certificate), with no Docker
   socket; `flex-orch openapi` and the published `docs/schemas/openapi.json`
   (bearer token declared, operations named after their routes); job progress
   as Server-Sent Events (`/jobs/{id}/events`); CORS (`FLEXORCH_CORS_ORIGINS`);
@@ -56,8 +69,9 @@
   suite (`tests/test_gateway.py`), with a generated client.
 - `examples/server_examples/docker_tenants.py`: sets up the cluster, the
   gateway and two tenants in Docker from Python, then runs the surrogate sweep
-  through them as three users. `Orchestrator(url=..., cafile=...)` trusts a
-  gateway's own CA.
+  through them as three users, with the passwords and tokens made the way an
+  app would. `Orchestrator(url=..., cafile=...)` trusts a certificate from the
+  app's own CA.
 - A long-lived local Acquirium: `flex-orch [--data-dir D] acquirium start |
   status | stop` (`flex_orchestrator.service`) runs `acquirium server`
   detached on loopback, optionally with your own `acquirium.toml` (its
