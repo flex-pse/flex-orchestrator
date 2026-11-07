@@ -1,0 +1,35 @@
+name: ray-shutdown-repro
+on:
+  push:
+    branches: [tmp/ray-shutdown-repro]
+jobs:
+  repro:
+    name: ${{ matrix.scenario }} ray-${{ matrix.ray }}
+    runs-on: windows-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        ray: ["2.59.1", "2.60.0"]
+        scenario: [bare, tasks, hostile, pytest]
+        include:
+          - {scenario: bare, iterations: 30}
+          - {scenario: tasks, iterations: 30}
+          - {scenario: hostile, iterations: 30}
+          - {scenario: pytest, iterations: 8}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - shell: bash
+        run: pip install -q -e ".[dev,pyomo]" "ray==${{ matrix.ray }}" psutil
+      - shell: bash
+        run: pip list 2>/dev/null | grep -i -E '^(ray|pyomo|pandas|pyarrow) '
+      - shell: bash
+        run: python .github/ray_repro/loop.py ${{ matrix.scenario }} ${{ matrix.iterations }} ${{ matrix.ray }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ matrix.scenario }}-${{ matrix.ray }}
+          path: repro_logs/
