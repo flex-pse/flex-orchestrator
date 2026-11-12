@@ -2,6 +2,8 @@
 
 import json
 
+import pandas as pd
+import pyomo.environ as pyo
 import pytest
 
 pytest.importorskip("flexdesign")
@@ -23,6 +25,7 @@ from flexorchestrator.flexpse import (  # noqa: E402
     build,
     configure,
     solve,
+    time_grid,
     time_sets,
 )
 from flexorchestrator.hooks import DEFAULT_HOOKS  # noqa: E402
@@ -107,6 +110,7 @@ def flowsheet():
                     "soc_max": 1.0,
                     "soh": 1.0,
                     "cyclic": True,
+                    "fix_initial_state": False,
                 },
             },
             {"kind": "fix", "variable": "pump.delta_pressure", "value": 300000.0},
@@ -153,6 +157,38 @@ def design():
 def spec():
     full = DesignStudy.model_validate(design()).model_dump(mode="json")
     return compose_design(flowsheet(), full, "study")
+
+
+LOAD_PATH = "pump.inlet_state.flow_vol_phase[*,Liq]"
+
+
+def meter():
+    """Hourly pump flow in January and July 2025: 20 + hour, and 40 + hour."""
+    months = [
+        pd.date_range(f"2025-{m:02d}-01", periods=24, freq="h", tz="UTC")
+        for m in (1, 7)
+    ]
+    time = months[0].append(months[1])
+    flow = [(20.0 if t.month == 1 else 40.0) + t.hour for t in time]
+    return pd.DataFrame({"flow": flow}, time)
+
+
+def projection(year, growth):
+    """The meter's 2025 data moved to ``year`` and multiplied by ``growth``."""
+    data = meter() * growth
+    data.index = data.index + pd.DateOffset(years=year - 2025)
+    return data
+
+
+def load_input(**fields):
+    """The pump load from the meter, its 2025 data read for both modeled years."""
+    return {
+        "dataset": "meter",
+        "columns": ["flow"],
+        "rename": {"flow": LOAD_PATH},
+        "data_years": {2030: 2025, 2035: 2025},
+        **fields,
+    }
 
 
 # Unit: the spec format, its files, and the hooks' dispatch.
@@ -215,7 +251,12 @@ def test_apply_surrogate_edits_the_base():
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ("overrides", "problem"),
-    [({BATTERY: 10.0}, "sizes it as capacity"), ({"x": [1.0, 2.0]}, "per time point")],
+    [
+        ({BATTERY: 10.0}, "sizes it as capacity"),
+        ({"x": [1.0, 2.0]}, "per time point"),
+        ({f"horizon[2030,1].{BATTERY}": 10.0}, "sizes it as capacity"),
+        ({"horizon[2040,1].x": 1.0}, "models no 'horizon\[2040,1\]'"),
+    ],
 )
 def test_build_refuses_overrides_a_design_cant_honour(overrides, problem):
     with pytest.raises(SpecError, match=problem):
@@ -230,12 +271,20 @@ def test_a_bad_design_is_refused_when_stored():
 
 
 @pytest.mark.unit
-def test_a_design_cant_use_model_inputs():
-    entry = {"dataset": "d", "columns": ["x"]}
-    with pytest.raises(StudyConfigError, match="model_inputs"):
-        load_config(
-            {"base_model_spec": "b", "design": design(), "model_inputs": [entry]}
-        )
+def test_a_design_has_a_time_axis_per_horizon():
+    grids = time_grid(spec())
+    assert sorted(grids) == [
+        "horizon[2030,1]",
+        "horizon[2030,7]",
+        "horizon[2035,1]",
+        "horizon[2035,7]",
+    ]
+    july = grids["horizon[2035,7]"]
+    assert july[0] == pd.Timestamp("2035-07-01") and len(july) == 24  # days: 1
+    config = load_config(
+        {"base_model_spec": "b", "design": design(), "model_inputs": [load_input()]}
+    )
+    assert config.model_inputs[0].data_years == {2030: 2025, 2035: 2025}
 
 
 @pytest.mark.unit
@@ -433,8 +482,14 @@ def test_exporting_a_merged_model():
         model, include=["horizon[2035,7].battery.charge"], time_sets=time_sets(model)
     )
     assert data["horizon[2035,7].battery.charge"].timestamps[0].year == 2035
-    with pytest.raises(SpecError, match="merged design model"):
+    with pytest.raises(SpecError, match="under none of them"):
         apply_values(model, {"x": 1.0})
+    apply_values(model, {"horizon[2030,1].pump.delta_pressure": 250000.0})
+    pressure = {
+        h: {pyo.value(v) for v in model.horizon[h].pump.delta_pressure.values()}
+        for h in ((2030, 1), (2030, 7))
+    }
+    assert pressure == {(2030, 1): {250000.0}, (2030, 7): {300000.0}}
 
 
 @pytest.mark.component
@@ -454,3 +509,103 @@ def test_design_study_end_to_end_on_every_backend(orch):
     )
     charge = orch.model_results("e2e")["horizon[2035,7].battery.charge"]
     assert charge.timestamps[0].year == 2035 and charge.timestamps[0].month == 7
+
+
+def fixed_load(model, horizon):
+    flow = model.horizon[horizon].pump.inlet_state.flow_vol_phase
+    points = model.horizon[horizon].time_block.time_index
+    assert all(flow[p, "Liq"].fixed for p in points)
+    return [pyo.value(flow[p, "Liq"]) for p in points]
+
+
+@pytest.mark.component
+@pytest.mark.needs_highs
+def test_each_horizon_is_set_from_its_own_month(memory_orch):
+    memory_orch.store_data("meter", meter(), units={"flow": "m^3/hr"})
+    run = memory_orch.execute_study(
+        study_config(model_inputs=[load_input()], output_name="metered")
+    )
+    assert run.counts() == {"succeeded": 1}, run.results
+    result = memory_orch.result("metered")
+    january = [20.0 + hour for hour in range(24)]
+    july = [40.0 + hour for hour in range(24)]
+    assert {path: v["value"] for path, v in result.overrides.items()} == {
+        f"horizon[2030,1].{LOAD_PATH}": january,
+        f"horizon[2030,7].{LOAD_PATH}": july,
+        f"horizon[2035,1].{LOAD_PATH}": january,
+        f"horizon[2035,7].{LOAD_PATH}": july,
+    }
+    windows = {m["scope"]: m["window"]["start"] for m in result.model_inputs}
+    assert windows == {
+        "horizon[2030,1]": "2025-01-01 00:00:00",
+        "horizon[2030,7]": "2025-07-01 00:00:00",
+        "horizon[2035,1]": "2025-01-01 00:00:00",
+        "horizon[2035,7]": "2025-07-01 00:00:00",
+    }
+    # Rebuilt with its overrides, each horizon's load is fixed to its month.
+    model = memory_orch.build("metered", **result.overrides)
+    assert fixed_load(model, (2030, 7)) == july
+    assert fixed_load(model, (2035, 1)) == january
+    assert memory_orch.design_results("metered").annualized_cost > 0
+
+
+@pytest.mark.component
+@pytest.mark.needs_highs
+def test_a_full_path_sets_one_horizon(memory_orch):
+    memory_orch.store_data("meter", meter(), units={"flow": "m^3/hr"})
+    one = load_input(rename={"flow": f"horizon[2030,7].{LOAD_PATH}"})
+    run = memory_orch.execute_study(study_config(model_inputs=[one], output_name="one"))
+    assert run.counts() == {"succeeded": 1}, run.results
+    result = memory_orch.result("one")
+    assert list(result.overrides) == [f"horizon[2030,7].{LOAD_PATH}"]
+    model = memory_orch.build("one", **result.overrides)
+    assert fixed_load(model, (2030, 7)) == [40.0 + hour for hour in range(24)]
+    assert fixed_load(model, (2030, 1)) == [30.0] * 24  # the base's own fix
+    assert fixed_load(model, (2035, 7)) == [60.0] * 24  # and the design's change
+    # A path set both ways in one horizon is refused.
+    both = study_config(
+        model_inputs=[load_input(), one], output_name="both", on_existing="replace"
+    )
+    [clash] = memory_orch.execute_study(both).results
+    assert clash.status == "error" and "both set" in clash.error
+
+
+@pytest.mark.component
+@pytest.mark.needs_highs
+def test_each_year_takes_its_own_projection(memory_orch):
+    """A projection per modeled year, each set in that year's horizons."""
+    for year, growth in ((2030, 1.1), (2035, 1.21)):
+        memory_orch.store_data(
+            f"projection_{year}", projection(year, growth), units={"flow": "m^3/hr"}
+        )
+    entries = [
+        {
+            "dataset": f"projection_{year}",
+            "columns": ["flow"],
+            "rename": {"flow": f"horizon[{year},*].{LOAD_PATH}"},
+        }
+        for year in (2030, 2035)
+    ]
+    run = memory_orch.execute_study(
+        study_config(model_inputs=entries, output_name="projected")
+    )
+    assert run.counts() == {"succeeded": 1}, run.results
+    result = memory_orch.result("projected")
+    loads = {path: v["value"] for path, v in result.overrides.items()}
+    for (year, month), growth in {
+        (2030, 1): 1.1,
+        (2030, 7): 1.1,
+        (2035, 1): 1.21,
+        (2035, 7): 1.21,
+    }.items():
+        base = 20.0 if month == 1 else 40.0
+        expected = [(base + hour) * growth for hour in range(24)]
+        got = loads[f"horizon[{year},{month}].{LOAD_PATH}"]
+        assert got == pytest.approx(expected)
+    sources = {m["scope"]: m["resolved"]["dataset"] for m in result.model_inputs}
+    assert sources == {
+        "horizon[2030,1]": "projection_2030",
+        "horizon[2030,7]": "projection_2030",
+        "horizon[2035,1]": "projection_2035",
+        "horizon[2035,7]": "projection_2035",
+    }

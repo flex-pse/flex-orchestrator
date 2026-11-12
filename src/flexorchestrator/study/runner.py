@@ -200,7 +200,7 @@ def _check_design(orch: Any, cfg: StudyConfig, tasks: list[TaskSpec]) -> None:
 
     Raises:
         StudyConfigError: If a task's base is already a design study and the
-            config has a ``design`` or sets model inputs from data.
+            config has a ``design`` too.
         SpecError: If flex-pse rejects the composed design.
     """
     for base in sorted({task.base for task in tasks}):
@@ -213,11 +213,6 @@ def _check_design(orch: Any, cfg: StudyConfig, tasks: list[TaskSpec]) -> None:
                 raise StudyConfigError(
                     f"{base!r} is already a design study, so the config can't "
                     "have a design too."
-                )
-            if any(task.model_inputs or task.swept_inputs for task in tasks):
-                raise StudyConfigError(
-                    f"{base!r} is a design study, which can't use model_inputs "
-                    "yet: use its changes, with {'$source': path} files."
                 )
         elif cfg.design is not None:
             design = cfg.design.model_dump(mode="json")

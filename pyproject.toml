@@ -39,6 +39,8 @@ dev = [
 # The model data exporter (flexorchestrator.export) needs pyomo; flex-pse brings it.
 pyomo = ["pyomo>=6.8"]
 docs = ["sphinx", "myst-parser", "furo"]
+# The marimo tutorials (tutorials/), and exporting them for the docs.
+tutorials = ["marimo", "altair"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/flexorchestrator"]
@@ -72,6 +74,7 @@ pydocstyle.convention = "google"
 "**/tests/**" = ["D"]
 "conftest.py" = ["D"]
 "examples/**" = ["D"]
+"tutorials/**" = ["D", "B018"]  # a cell shows its last expression
 "docs/**" = ["D"]
 
 [tool.black]

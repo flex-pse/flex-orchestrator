@@ -916,7 +916,15 @@ class Orchestrator:
             entries(swept),
             cache=getattr(self._call, "inputs", None),
         )
-        both = sorted(set(found.values) & set(overrides))
+        # A path under no time block is set in every scope, as <scope>.<path>,
+        # so an override of <path> collides with each of those.
+        both = sorted(
+            {
+                found.requested.get(path, path)
+                for path in found.values
+                if path in overrides or found.requested.get(path) in overrides
+            }
+        )
         if both:
             raise ModelInputError(
                 f"{both} are set both by model_inputs and by a variable (a sweep, "

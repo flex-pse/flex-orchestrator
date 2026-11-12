@@ -3,6 +3,33 @@
 ## Unreleased
 
 ### Added
+- Model inputs for models with several time blocks (#5). Each path is lined
+  up with the nearest time block above it and read over that block's dates;
+  a path under none is set in every one. A design study's `model_inputs`
+  therefore set every horizon from its own year and month;
+  `horizon[<year>,<month>].<path>` sets one, and a `*` matches any year or
+  month (`horizon[2030,*].<path>`: every 2030 horizon), so each modeled year
+  can take its own projection. `data_years`
+  (`{2035: 2025}`) reads another year's dates, for modeled years with no data
+  yet. Provenance is recorded per time block. The `time_grid` hook may return
+  `{scope: grid}`, and `apply_values` fixes each time block's values on its
+  own block. The `design_study` example sets the pump's demand from a projection
+  per modeled year, and its `sweep_scenarios.py` sizes the plant under
+  several demand scenarios (the projection, and two noisy draws of it) with a
+  `model_inputs` sweep.
+- flex-pse 0.3.1: a design study's `design:` takes `capex_budget`, a cap on
+  the total capital cost of what it sizes, and storage units take
+  `cyclic` (end the horizon at least as full as it starts). A design
+  study's storage also needs `fix_initial_state: false` now; the
+  `design_study` example's battery sets it.
+- `resample.window` on a model input: `forward` (the default) gives step `t`
+  the samples of `[t, t + dt)`, the interval flex-pse means by a step;
+  `backward` gives it `(t - dt, t]`, the interval ending at `t`.
+- Tutorials (`tutorials/`): marimo notebooks with charts of the data and
+  of how it reaches the model, run as scripts by the tests and published, with
+  their outputs, in the docs: a first result end to end, model inputs,
+  surrogates, studies and sweeps, and design studies.
+  The `tutorials` extra installs marimo and Altair.
 - Documentation, built with Sphinx (`docs/`) and published to GitHub Pages
   from main: installation, a quick start, explanations of connecting,
   studies, storage, Ray, embedding and extending, and the API reference.
@@ -45,6 +72,7 @@
   - `model_inputs` can't be combined with a design yet (#5).
 
 ### Changed
+- A design study no longer refuses `model_inputs`.
 - The import package is renamed `flexorchestrator`, matching flex-pse's
   `flexcore`, `flexdesign` and the rest: `from flexorchestrator import
   Orchestrator`. The distribution is still `flex-orchestrator`, the CLI still
@@ -76,6 +104,10 @@
     tag's package metadata says so.
 
 ### Fixed
+- A model input's `sum` of data coarser than the model's steps (hourly kWh
+  on 15-minute steps) splits each sample's amount evenly over the steps it
+  covers. It used to put the whole amount on one step and interpolate the
+  steps between, overstating the total.
 - `[` in an export or result pattern is literal, as in a Pyomo path, so
   `horizon[2030,*].pump.*` matches. Patterns can no longer use `[...]` character
   classes.

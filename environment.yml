@@ -11,8 +11,9 @@ dependencies:
   - highspy=1.15
   - pip
   - pip:
-      # flex-pse v0.3.0 (upstream tag; flowsheet spec schema 0.1.1, adds flexdesign)
-      - "flex-pse[parameterize,solvers] @ git+https://github.com/flex-pse/flex-pse.git@809b25b6fba346cd6fcc5960e2d80db267e1c7fe"
+      # flex-pse 0.3.1 (upstream tag eec0ddc; flowsheet spec schema 0.1.1, flexdesign,
+      # storage `cyclic` options)
+      - "flex-pse[parameterize,solvers] @ git+https://github.com/flex-pse/flex-pse.git@eec0ddc620195cb610d9bacc3bbc3c37c828b508"
       # Ray 2.60.0 crashes in ray.shutdown() on Windows; drop this once a newer one doesn't.
       - "ray<2.60"
       # Acquirium main (b7f6fc8, 2026-11-09, the v0.4.0a9 release commit), pinned by SHA.

@@ -170,7 +170,7 @@
     },
     "DesignStudy": {
       "additionalProperties": false,
-      "description": "Run each task's model spec as a flex-pse design study.\n\nThis mirrors flex-pse's ``DesignSpec``; flex-pse checks the rules (weights\nsum to 12, years are consecutive) before any task runs.\n\nAttributes:\n    schema_version: The version of this study.\n    years: The modeled years, ascending.\n    months: The representative months.\n    changes: Changes to base elements, applied in order.\n    capacities: What to size.",
+      "description": "Run each task's model spec as a flex-pse design study.\n\nThis mirrors flex-pse's ``DesignSpec``; flex-pse checks the rules (weights\nsum to 12, years are consecutive) before any task runs.\n\nAttributes:\n    schema_version: The version of this study.\n    years: The modeled years, ascending.\n    months: The representative months.\n    changes: Changes to base elements, applied in order.\n    capacities: What to size.\n    capex_budget: A cap on the total overnight capital cost of every\n        capacity, in the model's currency; none by default.",
       "properties": {
         "capacities": {
           "items": {
@@ -179,6 +179,19 @@
           "minItems": 1,
           "title": "Capacities",
           "type": "array"
+        },
+        "capex_budget": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Capex Budget"
         },
         "changes": {
           "items": {
@@ -594,7 +607,7 @@
     },
     "InputResample": {
       "additionalProperties": false,
-      "description": "How samples become one value per time step.\n\nAttributes:\n    agg: How the samples in one step combine.",
+      "description": "How samples become one value per time step.\n\nA time step at ``t`` with length ``dt`` takes the samples of one interval\nand combines them with ``agg``:\n\n- ``forward`` (the default): ``[t, t + dt)``, the interval starting at\n  ``t``. This is what flex-pse means by a time step (its time points are\n  interval starts, and it costs a rate as ``rate[t] * dt``), so it's the\n  one for rates and costs. A sample stamped ``s`` stands for the interval\n  that starts at ``s``.\n- ``backward``: ``(t - dt, t]``, the interval ending at ``t``, for a value\n  that sums up what happened up to ``t``. A sample stamped ``s`` stands\n  for the interval that ends at ``s``, and the first step reads data from\n  before the horizon.\n\nData stamped the other way (a meter that stamps 10:00 to 10:15 as 10:15,\nread ``forward``) is shifted onto its interval's start with ``offset``\n(``\"15min\"``).\n\nWith ``agg: sum`` and data coarser than the steps (hourly kWh on\n15-minute steps), each sample's amount is split evenly over the steps its\ninterval covers. That needs the data's spacing to be a whole number of\nsteps.\n\nAttributes:\n    agg: How the samples in one step combine.\n    window: Which interval a step takes: ``forward`` or ``backward``.",
       "properties": {
         "agg": {
           "default": "mean",
@@ -608,6 +621,15 @@
             "last"
           ],
           "title": "Agg",
+          "type": "string"
+        },
+        "window": {
+          "default": "forward",
+          "enum": [
+            "forward",
+            "backward"
+          ],
+          "title": "Window",
           "type": "string"
         }
       },
@@ -640,7 +662,7 @@
     },
     "ModelInput": {
       "additionalProperties": false,
-      "description": "One ``model_inputs`` entry: a selector, then its alignment.\n\nAttributes:\n    timezone: The facility's time zone (an IANA name such as\n        ``\"America/Los_Angeles\"``). The model runs on that site's wall\n        clock, so stored UTC timestamps are converted to it before they're\n        lined up with the model's (naive) time steps. ``UTC`` by default:\n        data stored in UTC means a model in UTC.\n    resample: How the samples in one time step combine; ``mean`` by\n        default.\n    gaps: A time step with no value is filled by ``interpolate`` (in\n        time, the default), ``ffill`` (the last value carried forward) or\n        ``zero``; ``error`` refuses any gap.\n    limit: The longest run of missing steps ``interpolate`` or ``ffill``\n        fills; a longer one fails.\n    reduce: Set the variable to one number instead of a series: this\n        statistic of the data over the model's horizon.\n    offset: Read the data this far from the model's horizon, as a pandas\n        offset (``\"-365D\"``: last year's data for this horizon).",
+      "description": "One ``model_inputs`` entry: a selector, then its alignment.\n\nAttributes:\n    timezone: The facility's time zone (an IANA name such as\n        ``\"America/Los_Angeles\"``). The model runs on that site's wall\n        clock, so stored UTC timestamps are converted to it before they're\n        lined up with the model's (naive) time steps. ``UTC`` by default:\n        data stored in UTC means a model in UTC.\n    resample: How the samples in one time step combine; ``mean`` by\n        default.\n    gaps: A time step with no value is filled by ``interpolate`` (in\n        time, the default), ``ffill`` (the last value carried forward) or\n        ``zero``; ``error`` refuses any gap.\n    limit: The longest run of missing steps ``interpolate`` or ``ffill``\n        fills; a longer one fails.\n    reduce: Set the variable to one number instead of a series: this\n        statistic of the data over the model's horizon.\n    offset: Read the data this far from the model's horizon, as a pandas\n        offset (``\"-365D\"``: last year's data for this horizon).\n    data_years: ``{modeled year: data year}``: a horizon in a modeled year\n        reads the same calendar dates in the data year, before ``offset``.\n        A design study's 2035 horizons can read 2025's data with\n        ``{2035: 2025}``. A year not listed reads its own dates. A modeled\n        29 February reads 28 February when the data year has none.",
       "properties": {
         "columns": {
           "anyOf": [
@@ -656,6 +678,21 @@
           ],
           "default": null,
           "title": "Columns"
+        },
+        "data_years": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Years"
         },
         "dataset": {
           "anyOf": [
@@ -1646,7 +1683,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "A study as data; see :mod:`flexorchestrator.study.config`.\n\nAttributes:\n    study: The study to run in, created if needed; the selected one if\n        omitted.\n    base_model_spec: The model spec every task builds from, unless a\n        ``spec_list`` sweep names others.\n    design: Run every task as a design study\n        (:class:`~flexorchestrator.study.config.DesignStudy`). Can't be combined\n        with ``model_inputs``.\n    fits: ``fit_surrogate`` parameters, run before the sweeps.\n    model_inputs: Model variables every task sets from stored data:\n        fit selectors, each column (after ``rename``) named by the path it\n        sets, lined up with the model's time steps.\n    hooks: See :class:`HooksConfig`.\n    sweeps: See :class:`SurrogateSweep`, :class:`VariableSweep`,\n        :class:`ConfigurationSweep`, :class:`SpecListSweep`,\n        :class:`ModelInputsSweep` and :class:`CasesSweep`.\n    combine: ``product`` (every combination) or ``zip`` (the sweeps in\n        step; they must be the same length).\n    solve_options: Passed to the solve hook. For flex-pse: ``prefer``,\n        ``tee``, ``warmstart``, ``mip_gap``, ``time_limit`` and ``options``.\n    export: See :class:`ExportConfig`.\n    output_name: Each task's tag, e.g.\n        ``\"ro_{surrogate}_{plant.ro.recovery}\"``: fields are the sweeps'\n        names, plus ``base`` and ``index``. By default the base tag and\n        each sweep's value, joined by ``_``. A value is written exactly\n        (``str``; ``0.1 + 0.2`` gives ``0.30000000000000004``) unless the\n        field has a format spec, as in Python: ``{recovery:.3g}``,\n        ``{price:.2f}``. The tag is only a name: the values themselves are\n        stored in full with the result. Values that format alike make\n        tags that repeat, which is refused before anything runs.\n    on_existing: When a task's tag is stored: ``error`` (checked before\n        anything runs), ``skip`` it (resume), or ``replace`` it.\n    execution: See :class:`Execution`.",
+  "description": "A study as data; see :mod:`flexorchestrator.study.config`.\n\nAttributes:\n    study: The study to run in, created if needed; the selected one if\n        omitted.\n    base_model_spec: The model spec every task builds from, unless a\n        ``spec_list`` sweep names others.\n    design: Run every task as a design study\n        (:class:`~flexorchestrator.study.config.DesignStudy`).\n    fits: ``fit_surrogate`` parameters, run before the sweeps.\n    model_inputs: Model variables every task sets from stored data:\n        fit selectors, each column (after ``rename``) named by the path it\n        sets, lined up with the model's time steps. In a design study, a\n        path of the base flowsheet is set in every horizon from that\n        horizon's dates, and ``horizon[<year>,<month>].<path>`` in one.\n    hooks: See :class:`HooksConfig`.\n    sweeps: See :class:`SurrogateSweep`, :class:`VariableSweep`,\n        :class:`ConfigurationSweep`, :class:`SpecListSweep`,\n        :class:`ModelInputsSweep` and :class:`CasesSweep`.\n    combine: ``product`` (every combination) or ``zip`` (the sweeps in\n        step; they must be the same length).\n    solve_options: Passed to the solve hook. For flex-pse: ``prefer``,\n        ``tee``, ``warmstart``, ``mip_gap``, ``time_limit`` and ``options``.\n    export: See :class:`ExportConfig`.\n    output_name: Each task's tag, e.g.\n        ``\"ro_{surrogate}_{plant.ro.recovery}\"``: fields are the sweeps'\n        names, plus ``base`` and ``index``. By default the base tag and\n        each sweep's value, joined by ``_``. A value is written exactly\n        (``str``; ``0.1 + 0.2`` gives ``0.30000000000000004``) unless the\n        field has a format spec, as in Python: ``{recovery:.3g}``,\n        ``{price:.2f}``. The tag is only a name: the values themselves are\n        stored in full with the result. Values that format alike make\n        tags that repeat, which is refused before anything runs.\n    on_existing: When a task's tag is stored: ``error`` (checked before\n        anything runs), ``skip`` it (resume), or ``replace`` it.\n    execution: See :class:`Execution`.",
   "properties": {
     "base_model_spec": {
       "anyOf": [

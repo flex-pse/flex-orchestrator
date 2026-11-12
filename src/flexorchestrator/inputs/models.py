@@ -19,16 +19,41 @@ from flexorchestrator.fitting.models import Selector, _Strict
 Agg = Literal["mean", "sum", "min", "max", "median", "first", "last"]
 Gaps = Literal["interpolate", "ffill", "zero", "error"]
 Reduce = Literal["mean", "last", "first", "min", "max", "median"]
+Direction = Literal["forward", "backward"]
 
 
 class InputResample(_Strict):
     """How samples become one value per time step.
 
+    A time step at ``t`` with length ``dt`` takes the samples of one interval
+    and combines them with ``agg``:
+
+    - ``forward`` (the default): ``[t, t + dt)``, the interval starting at
+      ``t``. This is what flex-pse means by a time step (its time points are
+      interval starts, and it costs a rate as ``rate[t] * dt``), so it's the
+      one for rates and costs. A sample stamped ``s`` stands for the interval
+      that starts at ``s``.
+    - ``backward``: ``(t - dt, t]``, the interval ending at ``t``, for a value
+      that sums up what happened up to ``t``. A sample stamped ``s`` stands
+      for the interval that ends at ``s``, and the first step reads data from
+      before the horizon.
+
+    Data stamped the other way (a meter that stamps 10:00 to 10:15 as 10:15,
+    read ``forward``) is shifted onto its interval's start with ``offset``
+    (``"15min"``).
+
+    With ``agg: sum`` and data coarser than the steps (hourly kWh on
+    15-minute steps), each sample's amount is split evenly over the steps its
+    interval covers. That needs the data's spacing to be a whole number of
+    steps.
+
     Attributes:
         agg: How the samples in one step combine.
+        window: Which interval a step takes: ``forward`` or ``backward``.
     """
 
     agg: Agg = "mean"
+    window: Direction = "forward"
 
 
 class ModelInput(Selector):
@@ -51,6 +76,11 @@ class ModelInput(Selector):
             statistic of the data over the model's horizon.
         offset: Read the data this far from the model's horizon, as a pandas
             offset (``"-365D"``: last year's data for this horizon).
+        data_years: ``{modeled year: data year}``: a horizon in a modeled year
+            reads the same calendar dates in the data year, before ``offset``.
+            A design study's 2035 horizons can read 2025's data with
+            ``{2035: 2025}``. A year not listed reads its own dates. A modeled
+            29 February reads 28 February when the data year has none.
     """
 
     timezone: str = "UTC"
@@ -59,6 +89,7 @@ class ModelInput(Selector):
     limit: int | None = Field(default=None, ge=1)
     reduce: Reduce | None = None
     offset: str | None = None
+    data_years: dict[int, int] | None = None
 
     @field_validator("timezone")
     @classmethod

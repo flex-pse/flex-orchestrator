@@ -1,5 +1,5 @@
 # Development environment for flex-orchestrator.
-# flex-pse is the v0.3.0 release from git; to co-develop it, swap that line for
+# flex-pse is the 0.3.1 release from git; to co-develop it, swap that line for
 # `-e ../flex-pse[parameterize,solvers,testing]`. Acquirium comes from git, pinned to
 # the same commit of main as environment.yml (the experiment/study API came with
 # PR #78; no release on PyPI has it yet), never from a local checkout. Binary
@@ -29,9 +29,13 @@ dependencies:
   - sphinx
   - myst-parser
   - furo
+  # the marimo tutorials (tutorials/)
+  - marimo
+  - altair
   - pip:
-      # flex-pse v0.3.0 (flowsheet spec schema 0.1.1). The tag's dist-info still says 0.1.0.
-      - "flex-pse[parameterize,solvers,testing] @ git+https://github.com/flex-pse/flex-pse.git@v0.3.0"
+      # flex-pse 0.3.1 (flowsheet spec schema 0.1.1; storage `cyclic` options). The tag's
+      # dist-info still says 0.1.0, so moving the pin needs `pip install --force-reinstall`.
+      - "flex-pse[parameterize,solvers,testing] @ git+https://github.com/flex-pse/flex-pse.git@0.3.1"
       # Ray 2.60.0 crashes in ray.shutdown() on Windows; drop this once a newer one doesn't.
       - "ray<2.60"
       # Acquirium main (b7f6fc8, v0.4.0a9); keep in step with environment.yml

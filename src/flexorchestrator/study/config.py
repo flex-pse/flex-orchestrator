@@ -296,6 +296,8 @@ class DesignStudy(_Strict):
         months: The representative months.
         changes: Changes to base elements, applied in order.
         capacities: What to size.
+        capex_budget: A cap on the total overnight capital cost of every
+            capacity, in the model's currency; none by default.
     """
 
     schema_version: str = "0.1.0"
@@ -303,6 +305,7 @@ class DesignStudy(_Strict):
     months: list[RepresentativeMonth] = Field(min_length=1)
     changes: list[ParameterChange] = Field(default_factory=list)
     capacities: list[CapacityDecision] = Field(min_length=1)
+    capex_budget: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
 class HooksConfig(_Strict):
@@ -408,12 +411,13 @@ class StudyConfig(_Strict):
         base_model_spec: The model spec every task builds from, unless a
             ``spec_list`` sweep names others.
         design: Run every task as a design study
-            (:class:`~flexorchestrator.study.config.DesignStudy`). Can't be combined
-            with ``model_inputs``.
+            (:class:`~flexorchestrator.study.config.DesignStudy`).
         fits: ``fit_surrogate`` parameters, run before the sweeps.
         model_inputs: Model variables every task sets from stored data:
             fit selectors, each column (after ``rename``) named by the path it
-            sets, lined up with the model's time steps.
+            sets, lined up with the model's time steps. In a design study, a
+            path of the base flowsheet is set in every horizon from that
+            horizon's dates, and ``horizon[<year>,<month>].<path>`` in one.
         hooks: See :class:`HooksConfig`.
         sweeps: See :class:`SurrogateSweep`, :class:`VariableSweep`,
             :class:`ConfigurationSweep`, :class:`SpecListSweep`,
@@ -450,26 +454,6 @@ class StudyConfig(_Strict):
     output_name: str | None = None
     on_existing: Literal["error", "skip", "replace"] = "error"
     execution: Execution = Field(default_factory=Execution)
-
-    @model_validator(mode="after")
-    def _design_without_inputs(self) -> "StudyConfig":
-        if self.design is None:
-            return self
-        swept = any(
-            isinstance(sweep, ModelInputsSweep)
-            or (
-                isinstance(sweep, CasesSweep)
-                and any(case.model_inputs for case in sweep.cases)
-            )
-            for sweep in self.sweeps
-        )
-        if self.model_inputs or swept:
-            raise ValueError(
-                "design can't be combined with model_inputs yet: use the design's "
-                "changes, with {'$source': path} files, for data that varies by "
-                "horizon."
-            )
-        return self
 
 
 def load_config(config: Any) -> StudyConfig:

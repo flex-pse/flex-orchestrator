@@ -33,6 +33,7 @@ source_modules =
     flexorchestrator.study.config
     flexorchestrator.fitting.models
     flexorchestrator.inputs.models
+    flexorchestrator.inputs.scopes
     flexorchestrator.ext.commands
     flexorchestrator.ext.events
 forbidden_modules =

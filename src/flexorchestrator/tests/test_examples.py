@@ -161,7 +161,28 @@ def test_design_study():
     assert "{'succeeded': 3}" in out
     assert "solar_600: {'battery_energy'" in out
     assert "July 2030 battery charge starts 2030-07-01" in out
+    # Each horizon read its own month of its year's projection.
+    assert (
+        "horizon[2035,7] read projection_2035 2035-07-01 00:00:00 -> "
+        "2035-07-02 00:00:00" in out
+    )
     shutil.rmtree(EXAMPLES / "design_study" / "on_disk")
+
+
+def test_design_study_scenarios():
+    pytest.importorskip("flexdesign")
+    out = script(EXAMPLES / "design_study" / "sweep_scenarios.py")
+    assert "{'succeeded': 3}" in out
+    for scenario in ("growth", "noisy_1", "noisy_2"):
+        assert f"{scenario}: {{'battery_energy'" in out
+    # Each scenario read its own datasets.
+    assert "noisy_2 read noisy_2_2030, noisy_2_2035" in out
+    # The growth model, rebuilt from its result, solves to the same size.
+    assert "Rebuilt growth: ok" in out
+    [stored] = [x for x in out.splitlines() if x.startswith("growth: ")]
+    [rebuilt] = [x for x in out.splitlines() if x.startswith("growth battery: ")]
+    assert f"'battery_energy': '{rebuilt.split()[2]} kWh'" in stored
+    shutil.rmtree(EXAMPLES / "design_study" / "on_disk_scenarios")
 
 
 POPULATE = """

@@ -137,3 +137,72 @@ def test_streams_set_the_pump_flow_on_acquirium(
     assert record["resolved"]["refs"] == {
         FLOW: str(acquirium_local.reference_uri(historian, "FT_B"))
     }
+
+
+def two_plants():
+    """The issue's model: two plants, each with its own time block."""
+    from flexops import TimeBlock
+    from pyomo.environ import units as pu
+
+    m = pyo.ConcreteModel()
+    m.plant_a = pyo.Block()
+    m.plant_b = pyo.Block()
+    m.plant_a.time_block = TimeBlock(
+        start_date="2025-07-08", end_date="2025-07-08T03:00", time_step=pu.hr
+    )
+    m.plant_b.time_block = TimeBlock(
+        start_date="2025-07-09", end_date="2025-07-09T02:00", time_step=pu.hr
+    )
+    m.plant_a.var_a = pyo.Var(m.plant_a.time_block.time_index)
+    m.plant_b.var_b = pyo.Var(m.plant_b.time_block.time_index)
+    m.plant_b.size = pyo.Var()
+    return m
+
+
+def test_each_plant_takes_data_over_its_own_time_block():
+    from flexops import TimeBlock
+
+    from flexorchestrator.errors import ModelInputError, SpecError
+    from flexorchestrator.flexpse import apply_values, time_grid
+    from flexorchestrator.hooks import DEFAULT_HOOKS
+    from flexorchestrator.testing import memory_orchestrator
+
+    model = two_plants()
+    grids = time_grid(model)
+    assert {scope: list(grid.hour) for scope, grid in grids.items()} == {
+        "plant_a": [0, 1, 2],
+        "plant_b": [0, 1],
+    }
+    assert grids["plant_b"][0] == pd.Timestamp("2025-07-09")
+
+    orch = memory_orchestrator(hooks=DEFAULT_HOOKS)
+    orch.store_data("meter", pd.DataFrame({"flow": np.arange(48.0)}, HOURS))
+    meter = {"dataset": "meter", "columns": ["flow"]}
+    a, b = model.plant_a, model.plant_b
+    # 8 July 00:00 is hour 24 of the data.
+    found = orch.apply_model_inputs(
+        model, {**meter, "rename": {"flow": "plant_a.var_a"}}
+    )
+    assert [a.var_a[t].value for t in a.time_block.time_index] == [24.0, 25.0, 26.0]
+    assert all(a.var_a[t].fixed for t in a.time_block.time_index)
+    assert found.provenance[0]["scope"] == "plant_a"
+    # plant_b runs on 9 July, past the data's end: its own window has no data.
+    with pytest.raises(ModelInputError, match="2025-07-09 00:00:00"):
+        orch.apply_model_inputs(model, {**meter, "rename": {"flow": "plant_b.var_b"}})
+    found = orch.apply_model_inputs(
+        model, {**meter, "rename": {"flow": "plant_b.var_b"}, "offset": "-1D"}
+    )
+    assert [b.var_b[t].value for t in b.time_block.time_index] == [24.0, 25.0]
+    assert found.provenance[0]["scope"] == "plant_b"
+    assert a.var_a[model.plant_a.time_block.time_index.first()].value == 24.0
+
+    with pytest.raises(SpecError, match="under none of them"):
+        apply_values(model, {"size": 1.0})
+    apply_values(model, {"plant_b.size": 2.0})
+    assert b.size.fixed and b.size.value == 2.0
+
+    model.plant_a.second = TimeBlock(
+        start_date="2025-07-08", end_date="2025-07-08T01:00", time_step=pyo.units.hr
+    )
+    with pytest.raises(SpecError, match="holds two time blocks"):
+        time_grid(model)

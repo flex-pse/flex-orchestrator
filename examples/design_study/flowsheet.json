@@ -107,7 +107,8 @@
         "soc_min": 0.0,
         "soc_max": 1.0,
         "soh": 1.0,
-        "cyclic": true
+        "cyclic": true,
+        "fix_initial_state": false
       }
     },
     {

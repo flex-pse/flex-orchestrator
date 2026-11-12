@@ -8,8 +8,10 @@ design:
     - {month: 1, weight: 6, days: 1}
     - {month: 7, weight: 6, days: 1}
   changes:
-    # Demand doubles in the second period.
-    - {element: load, years: [2035], values: {value: 60.0}}
+    # Electricity costs more in the second period.
+    - element: costing
+      years: [2035]
+      values: {energy_prices: {electrical: {value: 0.15, units: USD/kWh}}}
     # A file named here is stored with the spec.
     - element: pv
       months: [7]
@@ -25,6 +27,16 @@ design:
       capital_cost: 1200
       lifetime_years: 25
       upper: 1500
+# The pump's demand, from a projection per modeled year (example.py stores
+# them). horizon[2030,*] sets the path in every 2030 horizon, each from its own
+# month of projection_2030; horizon[2035,*] does the same with projection_2035.
+model_inputs:
+  - dataset: projection_2030
+    columns: [flow]
+    rename: {flow: "horizon[2030,*].pump.inlet_state.flow_vol_phase[*,Liq]"}
+  - dataset: projection_2035
+    columns: [flow]
+    rename: {flow: "horizon[2035,*].pump.inlet_state.flow_vol_phase[*,Liq]"}
 sweeps:
   - type: configuration_option
     name: solar_cost

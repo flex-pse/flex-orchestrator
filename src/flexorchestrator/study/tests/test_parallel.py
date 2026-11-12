@@ -269,27 +269,51 @@ def test_a_failing_job_cancels_the_others():
 
 @pytest.mark.needs_highs
 def test_design_study_runs_on_ray():
+    """With each horizon's load from stored data, Ray stores what serial does."""
     pytest.importorskip("flexdesign")
     from flexorchestrator.hooks import DEFAULT_HOOKS
-    from flexorchestrator.study.tests.test_study_design import design, flowsheet
-
-    orch = memory_orchestrator(hooks=DEFAULT_HOOKS)
-    orch.store_model_spec("plant", flowsheet())
-    run = orch.execute_study(
-        {
-            "base_model_spec": "plant",
-            "design": design(),
-            "sweeps": [
-                {
-                    "type": "configuration_option",
-                    "name": "cost",
-                    "path": "capacities.solar.capital_cost",
-                    "values": [600.0, 2400.0],
-                }
-            ],
-            "output_name": "ray_{cost:.0f}",
-            "execution": {"max_workers": 2},
-        }
+    from flexorchestrator.study.tests.test_study_design import (
+        design,
+        flowsheet,
+        load_input,
+        meter,
     )
-    assert run.counts() == {"succeeded": 2}, run.results
-    assert orch.design_results("ray_600").annualized_cost > 0
+
+    runs = []
+    for workers in (1, 2):
+        orch = memory_orchestrator(hooks=DEFAULT_HOOKS)
+        orch.store_model_spec("plant", flowsheet())
+        orch.store_data("meter", meter(), units={"flow": "m^3/hr"})
+        run = orch.execute_study(
+            {
+                "base_model_spec": "plant",
+                "design": design(),
+                "model_inputs": [load_input()],
+                "sweeps": [
+                    {
+                        "type": "configuration_option",
+                        "name": "cost",
+                        "path": "capacities.solar.capital_cost",
+                        "values": [600.0, 2400.0],
+                    }
+                ],
+                "output_name": "ray_{cost:.0f}",
+                "execution": {"max_workers": workers},
+            }
+        )
+        assert run.counts() == {"succeeded": 2}, run.results
+        runs.append(
+            {
+                tag: (
+                    orch.result(tag).overrides,
+                    orch.design_results(tag).annualized_cost,
+                )
+                for tag in ("ray_600", "ray_2400")
+            }
+        )
+    serial, on_ray = runs
+    assert {t: o for t, (o, _) in on_ray.items()} == {
+        t: o for t, (o, _) in serial.items()
+    }
+    for tag, (_, cost) in on_ray.items():
+        assert cost == pytest.approx(serial[tag][1]) and cost > 0

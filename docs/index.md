@@ -22,6 +22,13 @@ getting_started/quick_start
 ```
 
 ```{toctree}
+:maxdepth: 1
+:caption: Tutorials
+
+tutorials
+```
+
+```{toctree}
 :maxdepth: 2
 :caption: Explanation
 

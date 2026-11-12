@@ -1,0 +1,67 @@
+# Size the battery and solar under three demand scenarios: the projection
+# alone, and the projection with extra random variation (two draws).
+# The design is the one in study.yaml, at one solar price.
+base_model_spec: plant
+design:
+  years:
+    - {year: 2030, represents: 5}
+    - {year: 2035, represents: 5}
+  months:
+    - {month: 1, weight: 6, days: 1}
+    - {month: 7, weight: 6, days: 1}
+  changes:
+    - element: costing
+      years: [2035]
+      values: {energy_prices: {electrical: {value: 0.15, units: USD/kWh}}}
+    - element: pv
+      months: [7]
+      values: {construction_options: {capacity_factor: {$source: sun_july.json}}}
+  capacities:
+    - name: battery_energy
+      variable: battery.energy_capacity
+      capital_cost: 300
+      lifetime_years: 15
+      upper: 1500
+    - name: solar
+      variable: pv.capacity
+      capital_cost: 600
+      lifetime_years: 25
+      upper: 1500
+# Each scenario is a set of model inputs: one dataset per modeled year, set in
+# that year's horizons. sweep_scenarios.py stores the datasets.
+sweeps:
+  - type: model_inputs
+    name: scenario
+    values:
+      - label: growth
+        inputs:
+          - dataset: projection_2030
+            columns: [flow]
+            rename: {flow: "horizon[2030,*].pump.inlet_state.flow_vol_phase[*,Liq]"}
+          - dataset: projection_2035
+            columns: [flow]
+            rename: {flow: "horizon[2035,*].pump.inlet_state.flow_vol_phase[*,Liq]"}
+      - label: noisy_1
+        inputs:
+          - dataset: noisy_1_2030
+            columns: [flow]
+            rename: {flow: "horizon[2030,*].pump.inlet_state.flow_vol_phase[*,Liq]"}
+          - dataset: noisy_1_2035
+            columns: [flow]
+            rename: {flow: "horizon[2035,*].pump.inlet_state.flow_vol_phase[*,Liq]"}
+      - label: noisy_2
+        inputs:
+          - dataset: noisy_2_2030
+            columns: [flow]
+            rename: {flow: "horizon[2030,*].pump.inlet_state.flow_vol_phase[*,Liq]"}
+          - dataset: noisy_2_2035
+            columns: [flow]
+            rename: {flow: "horizon[2035,*].pump.inlet_state.flow_vol_phase[*,Liq]"}
+  # Another sweep here, such as study.yaml's solar_cost, runs every scenario
+  # at every one of its values.
+output_name: "{scenario}"
+export:
+  include:
+    - "capacity*"
+    - "annual*"
+    - "horizon*.costing.aggregate_operating_cost"

@@ -27,7 +27,13 @@ def tiny_build(spec, **overrides):
 
 
 def hourly_grid(spec_or_model):
+    """The spec's hours; with ``scopes``, a time axis per scope, like a design."""
     spec = getattr(spec_or_model, "spec", spec_or_model)
+    if "scopes" in spec:
+        return {
+            scope: pd.date_range(start, periods=spec["steps"], freq="h")
+            for scope, start in spec["scopes"].items()
+        }
     return pd.date_range(spec["start"], periods=spec["steps"], freq="h")
 
 
@@ -140,6 +146,31 @@ def test_a_variable_set_both_ways_is_an_error(orch):
     [result] = run.results
     assert result.status == "error"
     assert "set both by model_inputs and by a variable" in result.error
+
+
+def test_each_time_block_gets_its_own_data(orch):
+    scoped = {"scopes": {"h1": "2025-07-08", "h2": "2025-07-09"}, "steps": 2}
+    orch.store_model_spec("scoped", scoped)
+    run = orch.execute_study(
+        study(base_model_spec="scoped", sweeps=[], output_name="scoped")
+    )
+    assert run.counts() == {"succeeded": 1}
+    result = orch.result("scoped")
+    assert {path: v["value"] for path, v in result.overrides.items()} == {
+        "h1.plant.d": [24.0, 25.0],
+        "h2.plant.d": [48.0, 49.0],
+    }
+    assert [(m["scope"], m["paths"]) for m in result.model_inputs] == [
+        ("h1", ["h1.plant.d"]),
+        ("h2", ["h2.plant.d"]),
+    ]
+    # A variable sweep of the same path collides with every time block's.
+    sweep = {"type": "variable", "path": "plant.d", "values": [1.0]}
+    run = orch.execute_study(
+        study(base_model_spec="scoped", sweeps=[sweep], output_name="clash")
+    )
+    [clash] = run.results
+    assert clash.status == "error" and "['plant.d'] are set both" in clash.error
 
 
 def test_a_failed_input_is_an_error_result(orch):

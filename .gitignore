@@ -10,12 +10,16 @@ dist/
 coverage.xml
 htmlcov/
 docs/_build/
+docs/_tutorials/
+__marimo__/
 .env
 .claude/
 .flexorch/
 tmp_flexorch/
 examples/ro_study/export/
 examples/ro_study/on_disk/
+examples/design_study/on_disk/
+examples/design_study/on_disk_scenarios/
 
 # Internal design plan, kept locally only
 PLAN.md

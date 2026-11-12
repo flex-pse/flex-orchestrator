@@ -1,0 +1,134 @@
+{
+  "schema_version": "0.1.1",
+  "name": "base",
+  "elements": [
+    {
+      "kind": "time",
+      "start_date": "2025-01-01",
+      "end_date": "2025-01-02",
+      "time_step": "1 hr"
+    },
+    {
+      "kind": "property_package",
+      "name": "properties",
+      "property_class": "SimpleAqueousFlow",
+      "options": {
+        "has_pressure": true,
+        "density": {
+          "value": 1000.0,
+          "units": "kg/m^3"
+        }
+      }
+    },
+    {
+      "kind": "costing",
+      "name": "costing",
+      "energy_prices": {
+        "electrical": {
+          "value": 0.1,
+          "units": "USD/kWh"
+        }
+      },
+      "export_prices": {
+        "electrical": {
+          "value": 0.0,
+          "units": "USD/kWh"
+        }
+      },
+      "discount_rate": 0.07
+    },
+    {
+      "kind": "unit",
+      "name": "pump",
+      "unit_model_class": "Pump",
+      "construction_options": {
+        "power_relation": "hydraulic",
+        "efficiency": 0.75
+      }
+    },
+    {
+      "kind": "unit",
+      "name": "pv",
+      "unit_model_class": "GenericRenewables",
+      "property_package": null,
+      "construction_options": {
+        "capacity": {
+          "value": 500.0,
+          "units": "kW"
+        },
+        "capacity_factor": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.8,
+          0.8,
+          0.8,
+          0.8,
+          0.8,
+          0.8,
+          0.8,
+          0.8,
+          0.8,
+          0.8,
+          0.8,
+          0.8,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "kind": "unit",
+      "name": "battery",
+      "unit_model_class": "BatteryModel",
+      "property_package": null,
+      "construction_options": {
+        "energy_capacity": {
+          "value": 5000.0,
+          "units": "kWh"
+        },
+        "power_charge_max": {
+          "value": 2000.0,
+          "units": "kW"
+        },
+        "power_discharge_max": {
+          "value": 2000.0,
+          "units": "kW"
+        },
+        "eta_charge": 0.95,
+        "eta_discharge": 0.95,
+        "soc_min": 0.0,
+        "soc_max": 1.0,
+        "soh": 1.0,
+        "cyclic": true,
+        "fix_initial_state": false
+      }
+    },
+    {
+      "kind": "fix",
+      "variable": "pump.delta_pressure",
+      "value": 300000.0
+    },
+    {
+      "kind": "fix",
+      "variable": "pump.inlet_state.pressure",
+      "value": 100000.0
+    },
+    {
+      "kind": "fix",
+      "name": "load",
+      "variable": "pump.inlet_state.flow_vol_phase[*,Liq]",
+      "value": 30.0
+    },
+    {
+      "kind": "objective"
+    }
+  ]
+}

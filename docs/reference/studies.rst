@@ -49,3 +49,5 @@ Model inputs
    :no-members:
 
 .. automodule:: flexorchestrator.inputs.resolve
+
+.. automodule:: flexorchestrator.inputs.scopes

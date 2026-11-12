@@ -1,6 +1,7 @@
 """Sphinx configuration for flex-orchestrator."""
 
 from importlib.metadata import version as _dist_version
+from pathlib import Path
 
 project = "flex-orchestrator"
 copyright = "2026, flex-pse contributors"
@@ -18,7 +19,7 @@ extensions = [
 ]
 
 source_suffix = {".rst": "restructuredtext", ".md": "markdown"}
-exclude_patterns = ["_build"]
+exclude_patterns = ["_build", "_tutorials"]
 myst_heading_anchors = 3
 
 autodoc_member_order = "bysource"
@@ -59,3 +60,7 @@ nitpick_ignore_regex = [
 html_theme = "furo"
 html_title = f"flex-orchestrator {release}"
 html_static_path = ["_static"]
+# The tutorials, exported to HTML by the docs workflow
+# (`marimo export html tutorials/<name>.py -o docs/_tutorials/tutorials/<name>.html`);
+# a local build without them still works, with the links unresolved.
+html_extra_path = [p for p in ["_tutorials"] if (Path(__file__).parent / p).is_dir()]

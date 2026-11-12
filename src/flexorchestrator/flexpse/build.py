@@ -89,9 +89,15 @@ def with_overrides(spec: dict, overrides: Mapping[str, Any]) -> dict:
 def apply_values(model: pyo.Block, values: Mapping[str, Any]) -> None:
     """Fix variables of a built flex-pse model, as ``fix`` elements would.
 
-    The values are checked against the variables' bounds and applied together,
-    all or nothing (:func:`flexops.apply_spec`). A later apply of a point
-    replaces an earlier one.
+    In a model with several time blocks (a merged design model, or one with
+    ``plant_a.time_block`` and ``plant_b.time_block``), each path is fixed
+    against the nearest time block above it: the values are grouped by the
+    block that holds that time block (its scope), and each group is applied
+    to that block with paths relative to it.
+
+    The values are checked against the variables' bounds and applied together
+    (:func:`flexops.apply_spec`), all or nothing for each time block. A later
+    apply of a point replaces an earlier one.
 
     Args:
         model: The built model, changed in place.
@@ -102,11 +108,29 @@ def apply_values(model: pyo.Block, values: Mapping[str, Any]) -> None:
     Raises:
         flexcore.exceptions.FlexConfigError: If a path names no variable, or a
             value doesn't fit it.
-        SpecError: If ``model`` is a merged design model, which has several time
-            blocks; set values per horizon with the design's ``changes``.
+        SpecError: If the model has several time blocks and a path is under
+            none of them.
     """
-    refuse_design_model(model, "apply values to")
-    apply_spec(model, with_overrides({"elements": []}, values)["elements"])
+    # Imported here: flexpse.timegrid imports this module's package.
+    from flexorchestrator.flexpse.timegrid import time_scopes
+    from flexorchestrator.inputs.scopes import scope_of
+
+    scopes = time_scopes(model)
+    if len(scopes) <= 1:
+        apply_spec(model, with_overrides({"elements": []}, values)["elements"])
+        return
+    grouped: dict[str, dict[str, Any]] = {}
+    for path, value in values.items():
+        scope = scope_of(path, scopes)
+        if scope is None:
+            raise SpecError(
+                f"Can't fix {path!r}: the model has several time blocks and it is "
+                f"under none of them. Name it from one of {sorted(scopes)}."
+            )
+        relative = path[len(scope) + 1 :] if scope else path
+        grouped.setdefault(scope, {})[relative] = value
+    for scope, group in grouped.items():
+        apply_spec(scopes[scope], with_overrides({"elements": []}, group)["elements"])
 
 
 def refuse_design_model(model: pyo.Block, action: str) -> None:

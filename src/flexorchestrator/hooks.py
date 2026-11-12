@@ -250,7 +250,11 @@ class TimeGridFn(Protocol):
 
         Returns:
             A naive pandas ``DatetimeIndex`` in the model's local time, one
-            entry per time point with a fixed ``freq``, or ``None``.
+            entry per time point with a fixed ``freq``, or ``None``. A model
+            with several time blocks returns ``{scope: DatetimeIndex}``, where
+            the scope is the path of the block holding each time block
+            (``"horizon[2030,7]"``); each model input path is then lined up
+            with the nearest one above it (:mod:`flexorchestrator.inputs.scopes`).
         """
 
 
